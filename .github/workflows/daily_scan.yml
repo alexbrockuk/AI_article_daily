@@ -1,0 +1,71 @@
+name: Daily AI Article Scan
+
+# schedule + manual trigger
+on:
+  schedule:
+    - cron: '0 8 * * *'   # daily at 08:00 UTC — change as needed
+  workflow_dispatch:      # manual trigger from Actions UI
+
+permissions:
+  contents: write         # allow committing updated seen_store.json back to repo
+
+jobs:
+  run-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install biopython feedparser requests python-dotenv slack-sdk openai
+
+      - name: Create storage dir if missing
+        run: |
+          mkdir -p ./ai_scanner_storage
+          if [ ! -f ./ai_scanner_storage/seen_store.json ]; then echo '{"seen":{}}' > ./ai_scanner_storage/seen_store.json; fi
+
+      - name: Run AI article scanner
+        env:
+          # Secrets configured in repo (see instructions below)
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          PUBMED_EMAIL: ${{ secrets.PUBMED_EMAIL }}
+          PUBMED_API_KEY: ${{ secrets.PUBMED_API_KEY }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASS: ${{ secrets.SMTP_PASS }}
+          SMTP_FROM: ${{ secrets.SMTP_FROM }}
+          SMTP_TO: ${{ secrets.SMTP_TO }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
+          # Force the script to use the local storage dir inside the repo
+          AI_SCANNER_STORAGE: ./ai_scanner_storage
+        run: |
+          python ai_article_scanner.py
+
+      - name: Show git status (debug)
+        run: |
+          git status --porcelain || true
+          ls -la ai_scanner_storage || true
+
+      - name: Commit and push updated seen_store.json if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ai_scanner_storage/seen_store.json || true
+          if ! git diff --staged --quiet; then
+            git commit -m "Update seen_store.json from GitHub Actions run"
+            git push origin HEAD:main
+          else
+            echo "No changes to commit."
+          fi
