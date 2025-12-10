@@ -2,15 +2,13 @@ name: Daily AI Article Scan
 
 on:
   schedule:
-    # Runs at 05:00 UTC every day
-    - cron: '7 5 * * *'
-  workflow_dispatch: # Allows you to run this manually from the Actions tab
+    - cron: '17 5 * * *'  # Runs at 05:17 UTC daily
+  workflow_dispatch:      # Allows manual run
 
 jobs:
   run-scanner:
     runs-on: ubuntu-latest
     permissions:
-      # Required to push the json file back to the repo
       contents: write
 
     steps:
@@ -23,43 +21,38 @@ jobs:
           python-version: '3.10'
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install biopython feedparser requests slack-sdk python-dotenv openai
+        run: pip install feedparser requests python-dotenv openai
 
-      - name: Ensure Storage Directory Exists
-        # This prevents FileNotFoundError if it's the very first run
-        run: |
-          mkdir -p ai_scanner_storage
-          if [ ! -f ai_scanner_storage/seen_store.json ]; then
-            echo "{}" > ai_scanner_storage/seen_store.json
-          fi
-          
-- name: Debug File Structure
-        run: ls -R
-
-      - name: Run AI Scanner
+      - name: Find and Run Script
         env:
-          # Mapping GitHub Secrets to Environment Variables
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          PUBMED_EMAIL: ${{ secrets.PUBMED_EMAIL }}
-          PUBMED_API_KEY: ${{ secrets.PUBMED_API_KEY }}
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_CHANNEL: ${{ secrets.SLACK_CHANNEL }}
-          # Storage path env var for the script patch
           AI_SCANNER_STORAGE: ai_scanner_storage
-        run: python ai_article_scanner.py
+        run: |
+          # This command searches for the file and runs the first one it finds
+          SCRIPT_PATH=$(find . -name "ai_article_scanner.py" -type f | head -n 1)
+          
+          if [ -z "$SCRIPT_PATH" ]; then
+            echo "ERROR: Could not find ai_article_scanner.py anywhere in the repo."
+            # List all files so we can see what went wrong
+            find . -maxdepth 3 -not -path '*/.*'
+            exit 1
+          else
+            echo "Found script at: $SCRIPT_PATH"
+            python "$SCRIPT_PATH"
+          fi
 
       - name: Commit and Push State
-        # Commits the JSON file back to the repo if it changed
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add ai_scanner_storage/seen_store.json
-          # Check if there are changes before committing
-          if git diff --staged --quiet; then
-            echo "No changes to state file."
-          else
-            git commit -m "Update seen_store.json [skip ci]"
-            git push
+          
+          # Only commit if the storage folder exists and has changes
+          if [ -d "ai_scanner_storage" ]; then
+            git add ai_scanner_storage/seen_store.json
+            if git diff --staged --quiet; then
+              echo "No changes to state file."
+            else
+              git commit -m "Update seen_store.json [skip ci]"
+              git push
+            fi
           fi
