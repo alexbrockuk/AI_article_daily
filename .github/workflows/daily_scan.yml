@@ -3,7 +3,7 @@ name: Daily AI Article Scan
 on:
   schedule:
     # Runs at 05:00 UTC every day
-    - cron: '0 8 * * *'
+    - cron: '0 5 * * *'
   workflow_dispatch: # Allows you to run this manually from the Actions tab
 
 jobs:
