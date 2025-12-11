@@ -8,6 +8,7 @@ from datetime import datetime
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from openai import OpenAI
+from duckduckgo_search import DDGS  # <--- NEW LIBRARY
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -17,13 +18,11 @@ CONFIG = {
     "storage_dir": os.environ.get("AI_SCANNER_STORAGE", "ai_scanner_storage"),
     "seen_file": "seen_store.json",
     
-    # We scan deep (25 items) but filter aggressively
     "scan_depth": 25,  
-    "max_email_items": 7, 
+    "max_email_items": 5, # Reduced slightly since agentic work takes longer
 
     "jmir_feed": "https://ai.jmir.org/feed/atom",
     
-    # IMPROVED QUERY
     "arxiv_query": (
         "(cat:cs.HC OR cat:cs.CY OR cat:cs.SI) AND "
         "(all:advertising OR all:marketing OR all:brand OR "
@@ -32,7 +31,6 @@ CONFIG = {
         "all:narrative OR all:creative OR all:adoption)"
     ),
 
-    # --- FILTERING LOGIC ---
     "positive_keywords": [
         "communication", "agency", "marketing", "advertising", "brand", 
         "behavior", "psycholog", "persua", "nudge", "decision", 
@@ -49,7 +47,6 @@ CONFIG = {
         "gradient descent", "logit", "quantization", "bit-flip"
     ],
     
-    # Email Settings
     "email_sender": os.environ.get("EMAIL_ADDRESS"),
     "email_password": os.environ.get("EMAIL_PASSWORD"),
     "email_recipient": os.environ.get("EMAIL_ADDRESS")
@@ -77,18 +74,31 @@ def save_seen_id(article_id, seen_ids):
 
 def is_relevant(title, abstract):
     text = (title + " " + abstract).lower()
-    
-    # 1. Hard Block (Medical/Math Tech)
     for word in CONFIG["negative_keywords"]:
-        if word in text:
-            return False
-
-    # 2. Positive Keyword Check
+        if word in text: return False
     for word in CONFIG["positive_keywords"]:
-        if word in text:
-            return True
-            
+        if word in text: return True
     return False 
+
+# --- NEW AGENTIC FUNCTION ---
+def get_web_context(topic_title):
+    """
+    Searches the web to see if this topic is trending or being discussed.
+    """
+    print(f"   --> Agent searching web for: {topic_title[:50]}...")
+    try:
+        results = DDGS().text(topic_title, max_results=3)
+        if not results:
+            return "No immediate news or public discussion found."
+        
+        # Compile search snippets into a context string
+        context = "Web Search Findings:\n"
+        for r in results:
+            context += f"- {r['title']}: {r['body']}\n"
+        return context
+    except Exception as e:
+        print(f"   --> Search failed: {e}")
+        return "Could not perform web search."
 
 def send_email(subject, body):
     if not CONFIG["email_sender"] or not CONFIG["email_password"]:
@@ -151,16 +161,19 @@ def fetch_arxiv_articles():
         print(f"ArXiv Error: {e}")
         return []
 
-def summarize_article(title, abstract):
+def summarize_article(title, abstract, web_context):
     if not abstract: return "No abstract available."
     
+    # --- PROMPT UPGRADED FOR CONTEXT ---
     prompt = (
-        f"Analyze this research paper for a healthcare communications agency.\n\n"
-        f"1. Summarize the main finding in 2 short bullet points.\n"
-        f"2. Add a final single sentence labelled 'Agency Implication:' explaining exactly why "
-        f"a comms/marketing agency should care about this (e.g., how it affects patient trust, "
-        f"content creation, or behavior change).\n\n"
-        f"Title: {title}\nAbstract: {abstract}"
+        f"Analyze this research paper for a healthcare communications agency.\n"
+        f"I have also performed a web search to see if this topic is trending.\n\n"
+        f"PAPER DATA:\nTitle: {title}\nAbstract: {abstract}\n\n"
+        f"WEB CONTEXT:\n{web_context}\n\n"
+        f"YOUR TASK:\n"
+        f"1. Summarize the main finding (2 bullets).\n"
+        f"2. 'Buzz Check': Based on the web context, is this a brand new niche idea or part of an existing hot trend?\n"
+        f"3. 'Agency Implication': Single sentence on why we should care."
     )
     
     try:
@@ -174,7 +187,7 @@ def summarize_article(title, abstract):
 # --- MAIN ---
 
 def main():
-    print("Starting Smart Scan...")
+    print("Starting Agentic Scan...")
     seen_ids = get_seen_ids()
     candidates = fetch_jmir_articles() + fetch_arxiv_articles()
     
@@ -187,7 +200,12 @@ def main():
             break
 
         print(f"Processing: {article['title']}")
-        summary = summarize_article(article['title'], article['abstract'])
+        
+        # --- AGENTIC STEP ---
+        # We search the web for the title to see who else is talking about it
+        web_context = get_web_context(article['title'])
+        
+        summary = summarize_article(article['title'], article['abstract'], web_context)
         
         new_finds.append({
             "title": article['title'],
@@ -197,14 +215,13 @@ def main():
         })
         
         save_seen_id(article['id'], seen_ids)
-        time.sleep(1)
+        time.sleep(2) # Sleep longer to be nice to search engines
 
     if new_finds:
         print(f"Found {len(new_finds)} relevant articles.")
         email_body = f"<h2>Daily Agency/AI Insight Scan ({len(new_finds)})</h2>"
         for item in new_finds:
             clean_summary = item['summary'].replace('\n', '<br>')
-            
             email_body += f"""
             <hr>
             <p style="color:gray; font-size:12px;">{item['source']}</p>
