@@ -23,17 +23,20 @@ jobs:
       - name: Install dependencies
         run: pip install feedparser requests python-dotenv openai
 
-      - name: Find and Run Script
+- name: Find and Run Script
         env:
+          # --- EXISTING SECRETS ---
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           AI_SCANNER_STORAGE: ai_scanner_storage
+          # --- NEW SECRETS (ADD THESE) ---
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
         run: |
           # This command searches for the file and runs the first one it finds
           SCRIPT_PATH=$(find . -name "ai_article_scanner.py" -type f | head -n 1)
           
           if [ -z "$SCRIPT_PATH" ]; then
             echo "ERROR: Could not find ai_article_scanner.py anywhere in the repo."
-            # List all files so we can see what went wrong
             find . -maxdepth 3 -not -path '*/.*'
             exit 1
           else
