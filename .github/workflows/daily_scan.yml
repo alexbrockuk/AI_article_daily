@@ -23,7 +23,7 @@ jobs:
       - name: Install dependencies
         run: pip install feedparser requests python-dotenv openai
 
-- name: Find and Run Script
+      - name: Find and Run Script
         env:
           # --- EXISTING SECRETS ---
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
