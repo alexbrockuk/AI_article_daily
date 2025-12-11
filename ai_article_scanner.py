@@ -17,36 +17,40 @@ CONFIG = {
     "storage_dir": os.environ.get("AI_SCANNER_STORAGE", "ai_scanner_storage"),
     "seen_file": "seen_store.json",
     
-    # We fetch MORE initially, then filter them down to the best ones
-    "scan_depth": 20,  
+    "scan_depth": 25,  # Scan more deep to find the right ones
     "max_email_items": 7, 
 
     "jmir_feed": "https://ai.jmir.org/feed/atom",
     
-    # NEW: Expanded arXiv query for "Lateral Thinking"
-    # Logic: Computer Science Papers AND (Comms OR Psych OR Design OR Marketing)
+    # NEW STRATEGY: 
+    # 1. Remove cs.LG (Machine Learning) to stop the math papers.
+    # 2. Focus heavily on HC (Human Computer Interaction) and CY (Computers and Society).
+    # 3. The query now demands a "Human Element" (user, consumer, social, behavior).
     "arxiv_query": (
-        "(cat:cs.AI OR cat:cs.CL OR cat:cs.HC OR cat:cs.CY) AND "
-        "(all:advertising OR all:marketing OR all:communication OR "
-        "all:behavioral OR all:psychology OR all:decision OR "
-        "all:ux OR all:user_experience OR all:interface OR "
-        "all:persuasion OR all:nudge OR all:sentiment)"
+        "(cat:cs.HC OR cat:cs.CY OR cat:cs.SI) AND "
+        "(all:advertising OR all:marketing OR all:brand OR "
+        "all:consumer OR all:behavioral OR all:psychology OR "
+        "all:persuasion OR all:misinformation OR all:social_media OR "
+        "all:narrative OR all:creative OR all:adoption)"
     ),
 
     # --- FILTERING LOGIC ---
-    # If a title/abstract contains these, we KEEP it (High Priority)
+    # We keep the positive keywords to double-check relevance
     "positive_keywords": [
         "communication", "agency", "marketing", "advertising", "brand", 
         "behavior", "psycholog", "persua", "nudge", "decision", 
         "user experience", "ux", "interface", "design", "chatbot", 
-        "conversational", "narrative", "social media", "adoption"
+        "conversational", "narrative", "social media", "adoption",
+        "consumer", "trust", "ethics", "generative"
     ],
     
-    # If a title/abstract contains these, we DROP it (Medical Technicalities)
+    # We keep the negative keywords to block the heavy medical stuff from JMIR
     "negative_keywords": [
         "radiology", "tumor", "cancer", "surgery", "surgical", 
         "prognosis", "diagnosis", "diagnostic", "clinical trial", 
-        "genomic", "protein", "molecular", "scan", "mri", "ct image"
+        "genomic", "protein", "molecular", "scan", "mri", "ct image",
+        "reinforcement learning", "neural network architecture", 
+        "gradient descent", "logit", "quantization", "bit-flip"
     ],
     
     # Email Settings
