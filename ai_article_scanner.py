@@ -16,16 +16,43 @@ load_dotenv()
 CONFIG = {
     "storage_dir": os.environ.get("AI_SCANNER_STORAGE", "ai_scanner_storage"),
     "seen_file": "seen_store.json",
-    "max_results": 5, 
+    
+    # We fetch MORE initially, then filter them down to the best ones
+    "scan_depth": 20,  
+    "max_email_items": 7, 
+
     "jmir_feed": "https://ai.jmir.org/feed/atom",
+    
+    # NEW: Expanded arXiv query for "Lateral Thinking"
+    # Logic: Computer Science Papers AND (Comms OR Psych OR Design OR Marketing)
     "arxiv_query": (
-        "(cat:cs.AI OR cat:cs.CL OR cat:cs.LG) AND "
-        "(all:advertising OR all:marketing OR all:healthcare OR all:clinical)"
+        "(cat:cs.AI OR cat:cs.CL OR cat:cs.HC OR cat:cs.CY) AND "
+        "(all:advertising OR all:marketing OR all:communication OR "
+        "all:behavioral OR all:psychology OR all:decision OR "
+        "all:ux OR all:user_experience OR all:interface OR "
+        "all:persuasion OR all:nudge OR all:sentiment)"
     ),
+
+    # --- FILTERING LOGIC ---
+    # If a title/abstract contains these, we KEEP it (High Priority)
+    "positive_keywords": [
+        "communication", "agency", "marketing", "advertising", "brand", 
+        "behavior", "psycholog", "persua", "nudge", "decision", 
+        "user experience", "ux", "interface", "design", "chatbot", 
+        "conversational", "narrative", "social media", "adoption"
+    ],
+    
+    # If a title/abstract contains these, we DROP it (Medical Technicalities)
+    "negative_keywords": [
+        "radiology", "tumor", "cancer", "surgery", "surgical", 
+        "prognosis", "diagnosis", "diagnostic", "clinical trial", 
+        "genomic", "protein", "molecular", "scan", "mri", "ct image"
+    ],
+    
     # Email Settings
     "email_sender": os.environ.get("EMAIL_ADDRESS"),
     "email_password": os.environ.get("EMAIL_PASSWORD"),
-    "email_recipient": os.environ.get("EMAIL_ADDRESS") # Sending to yourself
+    "email_recipient": os.environ.get("EMAIL_ADDRESS")
 }
 
 # --- SETUP ---
@@ -35,89 +62,111 @@ client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 def get_seen_ids():
     path = os.path.join(CONFIG["storage_dir"], CONFIG["seen_file"])
-    if not os.path.exists(path):
-        return []
+    if not os.path.exists(path): return []
     try:
         with open(path, 'r') as f:
-            data = json.load(f)
-            return data.get("seen_ids", [])
-    except json.JSONDecodeError:
-        return []
+            return json.load(f).get("seen_ids", [])
+    except json.JSONDecodeError: return []
 
 def save_seen_id(article_id, seen_ids):
-    if article_id not in seen_ids:
-        seen_ids.append(article_id)
+    if article_id not in seen_ids: seen_ids.append(article_id)
     path = os.path.join(CONFIG["storage_dir"], CONFIG["seen_file"])
     os.makedirs(CONFIG["storage_dir"], exist_ok=True)
     with open(path, 'w') as f:
         json.dump({"seen_ids": seen_ids, "last_updated": str(datetime.now())}, f, indent=2)
 
+def is_relevant(title, abstract):
+    """
+    Decides if an article is relevant for an Agency/Comms context.
+    Returns: True (Keep) or False (Discard)
+    """
+    text = (title + " " + abstract).lower()
+    
+    # 1. Hard Block: If it mentions heavy medical tech, drop it immediately.
+    for word in CONFIG["negative_keywords"]:
+        if word in text:
+            return False
+
+    # 2. Soft Keep: For JMIR, we need to ensure it hits a 'positive' topic 
+    # since the source is medical. For arXiv, the query handles most of this, 
+    # but this double-checks.
+    for word in CONFIG["positive_keywords"]:
+        if word in text:
+            return True
+            
+    # If it's from arXiv, our query already did the heavy lifting, so we might contain it.
+    # But for JMIR, if it lacks a positive keyword, we assume it's too clinical.
+    return False 
+
 def send_email(subject, body):
     if not CONFIG["email_sender"] or not CONFIG["email_password"]:
         print("Skipping email: Credentials not set.")
         return
-
     msg = MIMEMultipart()
     msg['From'] = CONFIG["email_sender"]
     msg['To'] = CONFIG["email_recipient"]
     msg['Subject'] = subject
-    msg.attach(MIMEText(body, 'html')) # Sending as HTML for nice formatting
-
+    msg.attach(MIMEText(body, 'html'))
     try:
-        # Connect to Gmail Server
         server = smtplib.SMTP('smtp.gmail.com', 587)
         server.starttls()
         server.login(CONFIG["email_sender"], CONFIG["email_password"])
-        text = msg.as_string()
-        server.sendmail(CONFIG["email_sender"], CONFIG["email_recipient"], text)
+        server.sendmail(CONFIG["email_sender"], CONFIG["email_recipient"], msg.as_string())
         server.quit()
         print("Email sent successfully!")
     except Exception as e:
         print(f"Email failed: {e}")
 
 def fetch_jmir_articles():
+    print("--- Checking JMIR (Filtering for Comms/UX) ---")
     try:
         feed = feedparser.parse(CONFIG["jmir_feed"])
         results = []
-        for entry in feed.entries[:CONFIG["max_results"]]:
+        # We look at deeper history (scan_depth) to find the gems hidden among the clinical stuff
+        for entry in feed.entries[:CONFIG["scan_depth"]]:
             clean_id = entry.id.strip("/").split("/")[-1]
-            results.append({
-                "source": "JMIR",
-                "id": clean_id,
-                "title": entry.title,
-                "abstract": entry.summary,
-                "url": entry.link
-            })
+            if is_relevant(entry.title, entry.summary):
+                results.append({
+                    "source": "JMIR AI",
+                    "id": clean_id,
+                    "title": entry.title,
+                    "abstract": entry.summary,
+                    "url": entry.link
+                })
         return results
-    except Exception:
-        return []
+    except Exception: return []
 
 def fetch_arxiv_articles():
+    print("--- Checking arXiv (Broad Lateral Search) ---")
     query = CONFIG["arxiv_query"].replace(" ", "+").replace("(", "%28").replace(")", "%29")
     base_url = 'http://export.arxiv.org/api/query?'
-    search_query = f"search_query={query}&start=0&max_results={CONFIG['max_results']}&sortBy=submittedDate&sortOrder=descending"
+    # We fetch a few more than needed to allow for post-filtering
+    search_query = f"search_query={query}&start=0&max_results={CONFIG['scan_depth']}&sortBy=submittedDate&sortOrder=descending"
     try:
         response = urllib.request.urlopen(base_url + search_query).read()
         feed = feedparser.parse(response)
         results = []
         for entry in feed.entries:
             clean_id = entry.id.split('/abs/')[-1].split('v')[0]
-            results.append({
-                "source": "arXiv",
-                "id": clean_id,
-                "title": entry.title.replace('\n', ' '),
-                "abstract": entry.summary.replace('\n', ' '),
-                "url": entry.link
-            })
+            # Even though arXiv query is specific, we run the filter again to remove "medical imaging" noise
+            if is_relevant(entry.title, entry.summary):
+                results.append({
+                    "source": "arXiv",
+                    "id": clean_id,
+                    "title": entry.title.replace('\n', ' '),
+                    "abstract": entry.summary.replace('\n', ' '),
+                    "url": entry.link
+                })
         return results
-    except Exception:
-        return []
+    except Exception: return []
 
 def summarize_article(title, abstract):
     if not abstract: return "No abstract available."
+    # Adjusted prompt for "Connecting Dots"
     prompt = (
         f"Summarize this research paper in 2 bullet points. "
-        f"Focus specifically on the practical application for business or healthcare.\n\n"
+        f"Focus on the implications for human behavior, decision making, or user experience. "
+        f"Ignore technical medical implementation details.\n\n"
         f"Title: {title}\nAbstract: {abstract}"
     )
     try:
@@ -126,27 +175,31 @@ def summarize_article(title, abstract):
             model="gpt-3.5-turbo",
         )
         return response.choices[0].message.content.strip()
-    except Exception:
-        return "Summary failed."
+    except Exception: return "Summary failed."
 
 # --- MAIN ---
 
 def main():
-    print("Starting Scan...")
+    print("Starting Smart Scan...")
     seen_ids = get_seen_ids()
-    all_articles = fetch_jmir_articles() + fetch_arxiv_articles()
     
-    new_articles_found = []
-
-    for article in all_articles:
+    # Gather candidates
+    candidates = fetch_jmir_articles() + fetch_arxiv_articles()
+    
+    # Process only new ones
+    new_finds = []
+    for article in candidates:
         if article['id'] in seen_ids:
             continue
-            
+        
+        # Limit the daily email size so you don't get overwhelmed
+        if len(new_finds) >= CONFIG["max_email_items"]:
+            break
+
         print(f"Processing: {article['title']}")
         summary = summarize_article(article['title'], article['abstract'])
         
-        # Add to our email list
-        new_articles_found.append({
+        new_finds.append({
             "title": article['title'],
             "url": article['url'],
             "source": article['source'],
@@ -156,25 +209,20 @@ def main():
         save_seen_id(article['id'], seen_ids)
         time.sleep(1)
 
-    # If we found anything, email it!
-    if new_articles_found:
-        print(f"Found {len(new_articles_found)} new articles. Sending email...")
-        
-        # Build HTML Email Body
-        email_body = f"<h2>Daily AI Research Scan ({len(new_articles_found)})</h2>"
-        for item in new_articles_found:
-            # Convert markdown bullets to HTML bullets if needed, or just standard text
+    if new_finds:
+        print(f"Found {len(new_finds)} relevant articles.")
+        email_body = f"<h2>Daily Agency/AI Insight Scan ({len(new_finds)})</h2>"
+        for item in new_finds:
             clean_summary = item['summary'].replace('\n', '<br>')
             email_body += f"""
             <hr>
+            <p><strong>{item['source']}</strong></p>
             <h3><a href="{item['url']}">{item['title']}</a></h3>
-            <p><b>Source:</b> {item['source']}</p>
-            <p><b>Takeaway:</b><br>{clean_summary}</p>
+            <p><b>Insight:</b><br>{clean_summary}</p>
             """
-            
-        send_email(f"AI Research Daily: {len(new_articles_found)} New Papers", email_body)
+        send_email(f"AI Insights: {len(new_finds)} New Papers", email_body)
     else:
-        print("No new articles today. No email sent.")
+        print("No articles matched your relevance filters today.")
 
 if __name__ == "__main__":
     main()
