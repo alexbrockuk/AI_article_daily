@@ -94,23 +94,19 @@ def is_relevant(title, abstract):
 # --- NEW: REDDIT RSS SCANNER ---
 def fetch_reddit_buzz():
     """
-    Directly scans Reddit RSS feeds for top daily discussions.
-    Bypasses search engines completely for reliability.
+    Scans Reddit RSS, extracts top discussions, and uses OpenAI to 
+    generate a strategic Agency Insight + Buzz Check.
     """
     print("--- Checking Reddit Communities ---")
     
-    # Pick 2 random subreddits to check today
     targets = random.sample(CONFIG["reddit_targets"], 2)
     buzz_findings = []
 
     for sub in targets:
-        # RSS URL for "Top posts of the day"
         rss_url = f"https://www.reddit.com/r/{sub}/top/.rss?t=day"
         print(f"   --> Scanning r/{sub}...")
         
         try:
-            # We must set a User-Agent or Reddit blocks the request
-            # We use urllib to fetch, then feedparser to parse
             req = urllib.request.Request(
                 rss_url, 
                 headers={'User-Agent': 'Mozilla/5.0 (compatible; AgencyScanner/1.0)'}
@@ -122,31 +118,48 @@ def fetch_reddit_buzz():
                 print(f"   --> No trending posts in r/{sub}")
                 continue
 
-            # Take the top 3 post titles
+            # 1. Prepare Data for OpenAI
+            # We take the top 3 posts to get a representative sample of the "Mood"
             top_posts = feed.entries[:3]
-            chatter_text = "\n".join([f"- {p.title}" for p in top_posts])
-            
+            post_context = ""
+            for i, p in enumerate(top_posts):
+                # Clean title
+                clean_title = p.title.replace("[D]", "").strip()
+                post_context += f"{i+1}. {clean_title}\n"
+
+            # 2. The Strategic Prompt
             prompt = (
-                f"Here are the top trending discussions from the subreddit r/{sub} today:\n"
-                f"{chatter_text}\n\n"
-                f"Identify the common theme or the most controversial topic.\n"
-                f"Provide a 1-sentence 'Vibe Check' for an agency strategist."
+                f"Analyze these trending discussions from the subreddit r/{sub} for a creative agency.\n"
+                f"TOPICS:\n{post_context}\n\n"
+                f"TASK:\n"
+                f"1. 'Themes': Summarize the dominant conversation theme in 2 bullets.\n"
+                f"2. 'Buzz Check': Is this standard industry noise or a significant new sentiment/shift?\n"
+                f"3. 'Agency Implication': Single sentence on how this affects strategy or client advice."
             )
             
             response = client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
                 model="gpt-3.5-turbo",
             )
-            summary = response.choices[0].message.content.strip()
-            
+            ai_analysis = response.choices[0].message.content.strip()
+
+            # 3. Format Output: AI Analysis + Raw Links
+            # We build the HTML list of links to append to the bottom
+            links_html = "<br><strong>Top Threads:</strong><ul>"
+            for p in top_posts:
+                clean_title = p.title.replace("[D]", "").strip()
+                links_html += f"<li><a href='{p.link}' style='text-decoration:none;'>{clean_title}</a></li>"
+            links_html += "</ul>"
+
             buzz_findings.append({
                 "source": f"r/{sub}", 
                 "id": f"reddit-{sub}-{datetime.now().strftime('%Y%m%d')}",
-                "title": f"Community Buzz: r/{sub}",
+                "title": f"Community Pulse: r/{sub}",
                 "url": f"https://www.reddit.com/r/{sub}/top/?t=day",
-                "summary": summary
+                # Combine the Analysis and the Links
+                "summary": ai_analysis.replace('\n', '<br>') + links_html
             })
-            time.sleep(1) # Be polite
+            time.sleep(1)
             
         except Exception as e:
             print(f"   --> Reddit scan failed: {e}")
