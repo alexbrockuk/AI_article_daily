@@ -90,24 +90,27 @@ def is_relevant(title, abstract):
 # --- NEW: SEARCH ENGINE SIDE-DOOR FOR TWITTER ---
 def fetch_twitter_buzz():
     """
-    Broadened search: Looks for 'Community discussions' rather than just X.com
-    to avoid search engine indexing issues.
+    Robust search: Looks for Reddit threads and News instead of X.com
+    (which blocks robots).
     """
     print("--- Checking Community Buzz ---")
     
-    # We use the same hashtags, but look for broader conversation
     targets = random.sample(CONFIG["twitter_hashtags"], 2)
     buzz_findings = []
 
     for tag in targets:
-        # NEW QUERY: Look for the tag + discussion keywords
-        # We explicitly exclude pinterest because it clutters results
-        query = f"{tag} discussion forum community -site:pinterest.com"
-        print(f"   --> Searching buzz for: {tag}...")
+        # Strip the hash for the search query (Search engines prefer "GenerativeAI" over "#GenerativeAI")
+        clean_tag = tag.replace("#", "")
+        
+        # SEARCH STRATEGY: Look for Reddit threads or News
+        # This is almost guaranteed to find results
+        query = f"{clean_tag} reddit news discussion"
+        
+        print(f"   --> Searching buzz for: {query}...")
         
         try:
-            # Try to get results
-            results = DDGS().text(query, max_results=5)
+            # We use 'text' search which is broader and safer
+            results = DDGS().text(query, max_results=4)
             
             if not results: 
                 print(f"   --> No results found for {tag}")
@@ -117,7 +120,7 @@ def fetch_twitter_buzz():
             chatter_text = "\n".join([f"- {r['title']}: {r['body']}" for r in results])
             
             prompt = (
-                f"I performed a web search for community discussions on the topic '{tag}'.\n"
+                f"I performed a web search for community discussions on the topic '{clean_tag}'.\n"
                 f"Identify the current sentiment or 'hot take' from these snippets.\n"
                 f"Ignore generic marketing. Look for debates, fears, or new tools.\n\n"
                 f"SNIPPETS:\n{chatter_text}\n\n"
@@ -133,13 +136,11 @@ def fetch_twitter_buzz():
             
             buzz_findings.append({
                 "source": "Community Buzz", 
-                "id": f"buzz-{tag}-{datetime.now().strftime('%Y%m%d')}",
+                "id": f"buzz-{clean_tag}-{datetime.now().strftime('%Y%m%d')}",
                 "title": f"Hot Topic: {tag}",
-                # Search link so you can click to see the results yourself
-                "url": f"https://duckduckgo.com/?q={tag.replace('#', '%23')}",
+                "url": f"https://duckduckgo.com/?q={clean_tag}+reddit",
                 "summary": summary
             })
-            # Sleep to be polite to the search engine
             time.sleep(2)
             
         except Exception as e:
