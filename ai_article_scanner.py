@@ -43,10 +43,12 @@ CONFIG = {
         "compute", "model", "turing"
     ],
     
-    "reddit_targets": [
-        "ArtificialIntelligence", "MachineLearning", "ChatGPT",
-        "marketing", "advertising", "AgencyLife"
-    ],
+    # REDDIT CONFIGURATION
+    # 1. "Tech" subs: We assume these are always relevant.
+    "reddit_tech_subs": ["ArtificialIntelligence", "MachineLearning", "ChatGPT", "OpenAI"],
+    
+    # 2. "General" subs: We ONLY keep posts if they mention AI keywords.
+    "reddit_general_subs": ["marketing", "advertising", "AgencyLife"],
 
     "arxiv_query": (
         "(cat:cs.HC OR cat:cs.CY OR cat:cs.SI) AND "
@@ -105,26 +107,28 @@ def is_relevant(title, abstract):
         if word in text: return True
     return False 
 
-# --- NEW: THE EXECUTIVE BRIEFING GENERATOR ---
 def generate_daily_briefing(items):
     """
-    Takes all the collected items and asks AI to write a 'Morning Briefing'
-    connecting the dots between them.
+    Creates a 'War Room' style briefing.
     """
     if not items: return "No major updates today."
     
-    # Create a condensed list for the AI context window
     context_list = ""
     for item in items:
-        context_list += f"- [{item['source']}] {item['title']}: {item['summary'][:200]}\n"
+        # We limit the context per item to avoid hitting token limits
+        context_list += f"- [{item['source']}] {item['title']}: {item['summary'][:300]}\n"
         
     prompt = (
-        f"You are a Strategy Director at a top creative agency. "
-        f"Review these {len(items)} new AI insights found today:\n\n"
-        f"{context_list}\n\n"
-        f"TASK: Write a 'Morning Briefing' (max 3-4 sentences). "
-        f"Don't just list them. Synthesize the 'vibe'. Is there a common theme? "
-        f"Is it a technical day or a strategic day? What is the one thing I must know?"
+        f"You are an Executive Strategy Aide briefing an Agency Director.\n"
+        f"Review these {len(items)} items. Identify the top 3-4 most critical strategic shifts or signals.\n\n"
+        f"CONTEXT:\n{context_list}\n\n"
+        f"TASK: Write a 'Need to Know' briefing.\n"
+        f"RULES:\n"
+        f"1. No greetings.\n"
+        f"2. Use bullet points only.\n"
+        f"3. Be specific: Don't say 'There is news about X'. Say 'X has changed because of Y'.\n"
+        f"4. Focus on 'So What?': Connect the dots to agency strategy, client risk, or new opportunity.\n"
+        f"5. Keep it punchy and direct."
     )
     
     try:
@@ -172,10 +176,17 @@ def fetch_expert_insights():
     return results
 
 def fetch_reddit_buzz():
-    print("--- Checking Reddit Communities ---")
-    targets = random.sample(CONFIG["reddit_targets"], 2)
-    buzz_findings = []
-    for sub in targets:
+    """
+    Scans ALL target subreddits.
+    Filters 'General' subs for AI keywords.
+    Consolidates Top 6 valid items into ONE summary.
+    """
+    print("--- Checking Reddit Communities (Consolidated) ---")
+    
+    all_targets = CONFIG["reddit_tech_subs"] + CONFIG["reddit_general_subs"]
+    valid_candidates = []
+
+    for sub in all_targets:
         rss_url = f"https://www.reddit.com/r/{sub}/top/.rss?t=day"
         print(f"   --> Scanning r/{sub}...")
         try:
@@ -186,41 +197,66 @@ def fetch_reddit_buzz():
             feed = feedparser.parse(data)
             if not feed.entries: continue
             
-            top_posts = feed.entries[:3]
-            post_context = ""
-            for i, p in enumerate(top_posts):
+            # Check the top 5 posts from this sub
+            found_count = 0
+            for p in feed.entries[:5]:
                 clean_title = p.title.replace("[D]", "").strip()
-                post_context += f"{i+1}. {clean_title}\n"
-
-            prompt = (
-                f"Analyze trending discussions from r/{sub} for a creative agency.\n"
-                f"TOPICS:\n{post_context}\n\n"
-                f"TASK:\n1. 'Themes': Summarize dominant theme (2 bullets).\n"
-                f"2. 'Buzz Check': Standard noise or significant shift?\n"
-                f"3. 'Agency Implication': Single sentence strategy advice."
-            )
-            response = client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="gpt-3.5-turbo",
-            )
-            ai_analysis = response.choices[0].message.content.strip()
-            
-            links_html = "<br><strong>Top Threads:</strong><ul>"
-            for p in top_posts:
-                clean_title = p.title.replace("[D]", "").strip()
-                links_html += f"<li><a href='{p.link}' style='text-decoration:none;'>{clean_title}</a></li>"
-            links_html += "</ul>"
-
-            buzz_findings.append({
-                "source": f"r/{sub}", 
-                "id": f"reddit-{sub}-{datetime.now().strftime('%Y%m%d')}",
-                "title": f"Community Pulse: r/{sub}",
-                "url": f"https://www.reddit.com/r/{sub}/top/?t=day",
-                "summary": ai_analysis.replace('\n', '<br>') + links_html
-            })
-            time.sleep(1)
+                
+                # FILTER: If it's a general sub, it MUST mention AI
+                if sub in CONFIG["reddit_general_subs"]:
+                    full_text = clean_title.lower()
+                    has_ai = any(k in full_text for k in CONFIG["expert_ai_keywords"])
+                    if not has_ai: continue
+                
+                valid_candidates.append({
+                    "sub": sub,
+                    "title": clean_title,
+                    "link": p.link
+                })
+                # Max 2 posts per sub to ensure diversity
+                found_count += 1
+                if found_count >= 2: break
+                
         except Exception: continue
-    return buzz_findings
+
+    if not valid_candidates: return []
+
+    # Take Top 6 unique posts across all communities
+    # (RSS feed order is usually by score, so the first ones are highest ranked)
+    final_selection = valid_candidates[:6]
+    
+    # Synthesize
+    post_context = ""
+    links_html = "<br><strong>Trending Threads:</strong><ul>"
+    
+    for p in final_selection:
+        post_context += f"- [r/{p['sub']}] {p['title']}\n"
+        links_html += f"<li><strong>r/{p['sub']}:</strong> <a href='{p['link']}' style='text-decoration:none;'>{p['title']}</a></li>"
+    links_html += "</ul>"
+
+    prompt = (
+        f"Review these trending discussions from across the Reddit AI & Agency ecosystem.\n"
+        f"POSTS:\n{post_context}\n\n"
+        f"TASK:\n"
+        f"1. 'Meta-Narrative': What is the dominant mood today? (Hype, anger, technical breakthrough?)\n"
+        f"2. 'Agency Implication': Strategic advice based on this sentiment."
+    )
+    
+    try:
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="gpt-3.5-turbo",
+        )
+        ai_analysis = response.choices[0].message.content.strip()
+        
+        return [{
+            "source": "Community Pulse: Reddit", 
+            "id": f"reddit-consolidated-{datetime.now().strftime('%Y%m%d')}",
+            "title": "Cross-Community AI Sentiment",
+            "url": "https://www.reddit.com/r/ArtificialIntelligence/top/?t=day",
+            "summary": ai_analysis.replace('\n', '<br>') + links_html
+        }]
+    except Exception: return []
 
 def get_web_context(topic_title):
     try:
@@ -353,28 +389,29 @@ def main():
     if new_finds:
         print(f"Found {len(new_finds)} items. Generating briefing...")
         
-        # --- NEW: GENERATE DAILY BRIEFING ---
         daily_briefing = generate_daily_briefing(new_finds)
         
         # Build Email
+        clean_briefing = daily_briefing.replace('\n', '<br>')
+        
         email_body = f"""
-        <div style="background-color:#f4f4f4; padding:15px; border-radius:5px; margin-bottom:20px;">
-            <h2 style="margin-top:0;">☕ Morning Briefing</h2>
-            <p style="font-size:16px; line-height:1.5;">{daily_briefing}</p>
+        <div style="background-color:#f0f4f8; padding:20px; border-radius:8px; border-left: 5px solid #2c3e50; margin-bottom:25px; font-family: sans-serif;">
+            <h3 style="margin-top:0; color:#2c3e50;">☕ Morning Briefing</h3>
+            <div style="font-size:15px; line-height:1.6; color:#333;">{clean_briefing}</div>
         </div>
         """
         
         for item in new_finds:
             clean_summary = item['summary'].replace('\n', '<br>')
             if "Expert" in item['source']: color = "#800080"
-            elif "r/" in item['source']: color = "#FF4500"
+            elif "Community Pulse" in item['source']: color = "#FF4500"
             else: color = "gray"
             
             email_body += f"""
-            <hr>
-            <p style="color:{color}; font-weight:bold; font-size:12px;">{item['source']}</p>
-            <h3><a href="{item['url']}">{item['title']}</a></h3>
-            <p>{clean_summary}</p>
+            <hr style="border:0; border-top:1px solid #eee; margin: 20px 0;">
+            <p style="color:{color}; font-weight:bold; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:5px;">{item['source']}</p>
+            <h3 style="margin-top:0; margin-bottom:10px;"><a href="{item['url']}" style="color:#0066cc; text-decoration:none;">{item['title']}</a></h3>
+            <div style="font-size:14px; line-height:1.5; color:#444;">{clean_summary}</div>
             """
         
         send_email(f"AI Strategy Daily: {len(new_finds)} Updates", email_body)
