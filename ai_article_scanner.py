@@ -20,18 +20,33 @@ CONFIG = {
     "seen_file": "seen_store.json",
     
     "scan_depth": 25,  
-    "max_email_items": 7, 
+    "max_email_items": 12, # Increased cap for the larger roster
 
     "jmir_feed": "https://ai.jmir.org/feed/atom",
     
-    # NEW: Targeted Subreddits (The "Watercooler")
+    # THE COMPLETE EXPERT ROSTER
+    "expert_feeds": [
+        # 1. The Practical Manager
+        {"name": "Ethan Mollick", "url": "https://www.oneusefulthing.org/feed"},
+        # 2. The Brand Strategist
+        {"name": "Scott Galloway", "url": "https://www.profgalloway.com/feed/"},
+        # 3. The Macro Futurist
+        {"name": "Azeem Azhar", "url": "https://exponentialview.substack.com/feed"},
+        # 4. The Critical Theory / Reverse Centaur
+        {"name": "Cory Doctorow", "url": "https://pluralistic.net/feed/"},
+        # 5. The UX/Design Legend
+        {"name": "Jakob Nielsen", "url": "https://jakobnielsenphd.substack.com/feed"},
+        # 6. The Skeptic / Contrarian Journalist
+        {"name": "Ed Zitron", "url": "https://www.wheresyoured.at/feed"},
+        # 7. The Digital Anthropologist (NEW)
+        {"name": "Maggie Appleton", "url": "https://maggieappleton.com/rss.xml"},
+        # 8. The Technical Realist (NEW)
+        {"name": "Simon Willison", "url": "https://simonwillison.net/atom/entries/"}
+    ],
+    
     "reddit_targets": [
-        "ArtificialIntelligence",
-        "MachineLearning",
-        "ChatGPT",
-        "marketing",
-        "advertising",
-        "AgencyLife"
+        "ArtificialIntelligence", "MachineLearning", "ChatGPT",
+        "marketing", "advertising", "AgencyLife"
     ],
 
     "arxiv_query": (
@@ -91,60 +106,75 @@ def is_relevant(title, abstract):
         if word in text: return True
     return False 
 
-# --- NEW: REDDIT RSS SCANNER ---
-def fetch_reddit_buzz():
-    """
-    Scans Reddit RSS, extracts top discussions, and uses OpenAI to 
-    generate a strategic Agency Insight + Buzz Check.
-    """
-    print("--- Checking Reddit Communities ---")
+# --- EXPERT VOICES SCANNER ---
+def fetch_expert_insights():
+    print("--- Checking Expert Voices ---")
+    results = []
     
-    targets = random.sample(CONFIG["reddit_targets"], 2)
-    buzz_findings = []
-
-    for sub in targets:
-        rss_url = f"https://www.reddit.com/r/{sub}/top/.rss?t=day"
-        print(f"   --> Scanning r/{sub}...")
-        
+    for expert in CONFIG["expert_feeds"]:
         try:
+            print(f"   --> Checking {expert['name']}...")
             req = urllib.request.Request(
-                rss_url, 
+                expert['url'], 
                 headers={'User-Agent': 'Mozilla/5.0 (compatible; AgencyScanner/1.0)'}
             )
             data = urllib.request.urlopen(req).read()
             feed = feedparser.parse(data)
             
-            if not feed.entries:
-                print(f"   --> No trending posts in r/{sub}")
-                continue
+            if not feed.entries: continue
 
-            # 1. Prepare Data for OpenAI
-            # We take the top 3 posts to get a representative sample of the "Mood"
+            latest = feed.entries[0]
+            clean_id = latest.id if 'id' in latest else latest.link
+            
+            summary_text = latest.summary[:2500] if 'summary' in latest else latest.title
+
+            results.append({
+                "source": f"Expert Voice: {expert['name']}",
+                "id": clean_id,
+                "title": latest.title,
+                "url": latest.link,
+                "raw_text": summary_text
+            })
+            
+        except Exception as e:
+            print(f"   --> Failed to fetch {expert['name']}: {e}")
+            
+    return results
+
+def fetch_reddit_buzz():
+    print("--- Checking Reddit Communities ---")
+    targets = random.sample(CONFIG["reddit_targets"], 2)
+    buzz_findings = []
+    for sub in targets:
+        rss_url = f"https://www.reddit.com/r/{sub}/top/.rss?t=day"
+        print(f"   --> Scanning r/{sub}...")
+        try:
+            req = urllib.request.Request(
+                rss_url, headers={'User-Agent': 'Mozilla/5.0 (compatible; AgencyScanner/1.0)'}
+            )
+            data = urllib.request.urlopen(req).read()
+            feed = feedparser.parse(data)
+            if not feed.entries: continue
+            
             top_posts = feed.entries[:3]
             post_context = ""
             for i, p in enumerate(top_posts):
-                # Clean title
                 clean_title = p.title.replace("[D]", "").strip()
                 post_context += f"{i+1}. {clean_title}\n"
 
-            # 2. The Strategic Prompt
             prompt = (
-                f"Analyze these trending discussions from the subreddit r/{sub} for a creative agency.\n"
+                f"Analyze trending discussions from r/{sub} for a creative agency.\n"
                 f"TOPICS:\n{post_context}\n\n"
-                f"TASK:\n"
-                f"1. 'Themes': Summarize the dominant conversation theme in 2 bullets.\n"
-                f"2. 'Buzz Check': Is this standard industry noise or a significant new sentiment/shift?\n"
-                f"3. 'Agency Implication': Single sentence on how this affects strategy or client advice."
+                f"TASK:\n1. 'Themes': Summarize dominant theme (2 bullets).\n"
+                f"2. 'Buzz Check': Standard noise or significant shift?\n"
+                f"3. 'Agency Implication': Single sentence strategy advice."
             )
-            
             response = client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
                 model="gpt-3.5-turbo",
             )
             ai_analysis = response.choices[0].message.content.strip()
-
-            # 3. Format Output: AI Analysis + Raw Links
-            # We build the HTML list of links to append to the bottom
+            
             links_html = "<br><strong>Top Threads:</strong><ul>"
             for p in top_posts:
                 clean_title = p.title.replace("[D]", "").strip()
@@ -156,18 +186,13 @@ def fetch_reddit_buzz():
                 "id": f"reddit-{sub}-{datetime.now().strftime('%Y%m%d')}",
                 "title": f"Community Pulse: r/{sub}",
                 "url": f"https://www.reddit.com/r/{sub}/top/?t=day",
-                # Combine the Analysis and the Links
                 "summary": ai_analysis.replace('\n', '<br>') + links_html
             })
             time.sleep(1)
-            
-        except Exception as e:
-            print(f"   --> Reddit scan failed: {e}")
-            
+        except Exception: continue
     return buzz_findings
 
 def get_web_context(topic_title):
-    print(f"   --> Agent searching web for: {topic_title[:50]}...")
     try:
         results = DDGS().text(topic_title, max_results=3)
         if not results: return "No immediate news found."
@@ -235,6 +260,21 @@ def fetch_arxiv_articles():
         return results
     except Exception: return []
 
+def summarize_expert_post(title, raw_text):
+    prompt = (
+        f"Summarize this essay from a thought leader (like Ed Zitron or Ethan Mollick) for an agency strategist.\n"
+        f"TITLE: {title}\nTEXT SNIPPET: {raw_text}\n\n"
+        f"TASK:\n1. What is their core thesis? (1-2 sentences)\n"
+        f"2. 'Agency Takeaway': How should we adapt our thinking based on this?"
+    )
+    try:
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="gpt-3.5-turbo",
+        )
+        return response.choices[0].message.content.strip()
+    except Exception: return "Summary failed."
+
 def summarize_article(title, abstract, web_context):
     if not abstract: return "No abstract available."
     prompt = (
@@ -256,30 +296,33 @@ def summarize_article(title, abstract, web_context):
 # --- MAIN ---
 
 def main():
-    print("Starting Multi-Source Agent Scan...")
+    print("Starting Comprehensive Agency Scan...")
     seen_ids = get_seen_ids()
     
-    # 1. Fetch Papers
-    candidates = fetch_jmir_articles() + fetch_arxiv_articles()
+    # 1. Fetch Experts (Highest Priority)
+    experts = fetch_expert_insights()
     
-    # 2. Fetch Reddit Buzz (Replaces Search)
+    # 2. Fetch Reddit Buzz
     reddit_buzz = fetch_reddit_buzz()
     
-    # Combine (Reddit stuff goes first)
-    all_content = reddit_buzz + candidates
+    # 3. Fetch Papers
+    papers = fetch_jmir_articles() + fetch_arxiv_articles()
+    
+    all_content = experts + reddit_buzz + papers
     
     new_finds = []
     for item in all_content:
-        # Check duplicates
         if item['id'] in seen_ids: continue
         if len(new_finds) >= CONFIG["max_email_items"]: break
 
         print(f"Processing: {item['title']}")
         
-        # If it's a paper, do the deep dive.
         if "summary" not in item:
-            web_ctx = get_web_context(item['title'])
-            item["summary"] = summarize_article(item['title'], item['abstract'], web_ctx)
+            if "Expert Voice" in item["source"]:
+                item["summary"] = summarize_expert_post(item['title'], item['raw_text'])
+            else:
+                web_ctx = get_web_context(item['title'])
+                item["summary"] = summarize_article(item['title'], item['abstract'], web_ctx)
         
         new_finds.append(item)
         save_seen_id(item['id'], seen_ids)
@@ -290,8 +333,10 @@ def main():
         email_body = f"<h2>Daily Agency/AI Insight Scan ({len(new_finds)})</h2>"
         for item in new_finds:
             clean_summary = item['summary'].replace('\n', '<br>')
-            # Color code sources: Orange for Reddit, Gray for Papers
-            color = "#FF4500" if "r/" in item['source'] else "gray"
+            
+            if "Expert" in item['source']: color = "#800080" # Purple for Experts
+            elif "r/" in item['source']: color = "#FF4500"   # Orange for Reddit
+            else: color = "gray"
             
             email_body += f"""
             <hr>
