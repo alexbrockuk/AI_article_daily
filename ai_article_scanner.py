@@ -20,28 +20,30 @@ CONFIG = {
     "seen_file": "seen_store.json",
     
     "scan_depth": 25,  
-    "max_email_items": 12, # Increased cap for the larger roster
+    "max_email_items": 12,
 
     "jmir_feed": "https://ai.jmir.org/feed/atom",
     
-    # THE COMPLETE EXPERT ROSTER
+    # EXPERT FEEDS WITH RELEVANCE FILTERING
+    # 'filter': True means "Only show me if it mentions AI"
+    # 'filter': False means "Show me everything they write"
     "expert_feeds": [
-        # 1. The Practical Manager
-        {"name": "Ethan Mollick", "url": "https://www.oneusefulthing.org/feed"},
-        # 2. The Brand Strategist
-        {"name": "Scott Galloway", "url": "https://www.profgalloway.com/feed/"},
-        # 3. The Macro Futurist
-        {"name": "Azeem Azhar", "url": "https://exponentialview.substack.com/feed"},
-        # 4. The Critical Theory / Reverse Centaur
-        {"name": "Cory Doctorow", "url": "https://pluralistic.net/feed/"},
-        # 5. The UX/Design Legend
-        {"name": "Jakob Nielsen", "url": "https://jakobnielsenphd.substack.com/feed"},
-        # 6. The Skeptic / Contrarian Journalist
-        {"name": "Ed Zitron", "url": "https://www.wheresyoured.at/feed"},
-        # 7. The Digital Anthropologist (NEW)
-        {"name": "Maggie Appleton", "url": "https://maggieappleton.com/rss.xml"},
-        # 8. The Technical Realist (NEW)
-        {"name": "Simon Willison", "url": "https://simonwillison.net/atom/entries/"}
+        {"name": "Ethan Mollick", "url": "https://www.oneusefulthing.org/feed", "filter": False},
+        {"name": "Scott Galloway", "url": "https://www.profgalloway.com/feed/", "filter": True},
+        {"name": "Azeem Azhar", "url": "https://exponentialview.substack.com/feed", "filter": True},
+        {"name": "Cory Doctorow", "url": "https://pluralistic.net/feed/", "filter": True},
+        {"name": "Jakob Nielsen", "url": "https://jakobnielsenphd.substack.com/feed", "filter": True},
+        {"name": "Ed Zitron", "url": "https://www.wheresyoured.at/feed", "filter": True},
+        {"name": "Maggie Appleton", "url": "https://maggieappleton.com/rss.xml", "filter": True},
+        {"name": "Simon Willison", "url": "https://simonwillison.net/atom/entries/", "filter": True}
+    ],
+
+    # Keywords to check if 'filter' is True
+    "expert_ai_keywords": [
+        "ai ", "artificial intelligence", "llm", "gpt", "generative", 
+        "machine learning", "neural", "algorithm", "robot", "agent", 
+        "automation", "copilot", "claude", "gemini", "transformer", 
+        "compute", "model", "turing"
     ],
     
     "reddit_targets": [
@@ -106,7 +108,7 @@ def is_relevant(title, abstract):
         if word in text: return True
     return False 
 
-# --- EXPERT VOICES SCANNER ---
+# --- EXPERT VOICES SCANNER (Now with filtering) ---
 def fetch_expert_insights():
     print("--- Checking Expert Voices ---")
     results = []
@@ -125,8 +127,19 @@ def fetch_expert_insights():
 
             latest = feed.entries[0]
             clean_id = latest.id if 'id' in latest else latest.link
-            
             summary_text = latest.summary[:2500] if 'summary' in latest else latest.title
+            
+            # --- NEW FILTERING LOGIC ---
+            if expert['filter']:
+                # Combine title and summary for the check
+                full_text = (latest.title + " " + summary_text).lower()
+                # Check if ANY keyword is present
+                found_keyword = any(k in full_text for k in CONFIG["expert_ai_keywords"])
+                
+                if not found_keyword:
+                    print(f"       [Skipped] Post not about AI: {latest.title}")
+                    continue
+            # ---------------------------
 
             results.append({
                 "source": f"Expert Voice: {expert['name']}",
