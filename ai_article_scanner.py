@@ -19,6 +19,9 @@ CONFIG = {
     "storage_dir": os.environ.get("AI_SCANNER_STORAGE", "ai_scanner_storage"),
     "seen_file": "seen_store.json",
     
+    # GPT-4o is faster and smarter, handling the synthesis much better.
+    "ai_model": "gpt-4o", 
+
     "scan_depth": 25,  
     "max_email_items": 12,
 
@@ -43,11 +46,8 @@ CONFIG = {
         "compute", "model", "turing"
     ],
     
-    # REDDIT CONFIGURATION
-    # 1. "Tech" subs: We assume these are always relevant.
+    # REDDIT FILTERING
     "reddit_tech_subs": ["ArtificialIntelligence", "MachineLearning", "ChatGPT", "OpenAI"],
-    
-    # 2. "General" subs: We ONLY keep posts if they mention AI keywords.
     "reddit_general_subs": ["marketing", "advertising", "AgencyLife"],
 
     "arxiv_query": (
@@ -107,34 +107,30 @@ def is_relevant(title, abstract):
         if word in text: return True
     return False 
 
+# --- BRIEFING GENERATOR (Using GPT-4o) ---
 def generate_daily_briefing(items):
-    """
-    Creates a 'War Room' style briefing.
-    """
     if not items: return "No major updates today."
     
     context_list = ""
     for item in items:
-        # We limit the context per item to avoid hitting token limits
-        context_list += f"- [{item['source']}] {item['title']}: {item['summary'][:300]}\n"
+        context_list += f"- [{item['source']}] {item['title']}: {item['summary'][:250]}\n"
         
     prompt = (
-        f"You are an Executive Strategy Aide briefing an Agency Director.\n"
-        f"Review these {len(items)} items. Identify the top 3-4 most critical strategic shifts or signals.\n\n"
+        f"You are a Strategy Director. Review these {len(items)} daily insights.\n\n"
         f"CONTEXT:\n{context_list}\n\n"
-        f"TASK: Write a 'Need to Know' briefing.\n"
-        f"RULES:\n"
-        f"1. No greetings.\n"
-        f"2. Use bullet points only.\n"
-        f"3. Be specific: Don't say 'There is news about X'. Say 'X has changed because of Y'.\n"
-        f"4. Focus on 'So What?': Connect the dots to agency strategy, client risk, or new opportunity.\n"
-        f"5. Keep it punchy and direct."
+        f"TASK: Synthesize this into a 3-4 bullet point executive summary.\n"
+        f"RULES FOR SYNTHESIS:\n"
+        f"1. DO NOT simply list every item. Group related items into themes (e.g. 'GPT-5 launch and Reddit reaction' is one point).\n"
+        f"2. IGNORE outliers or niche items unless they signal a massive shift.\n"
+        f"3. Focus on the 'So What': Why does this combination of news matter to an agency?\n"
+        f"4. Be opinionated and strategic.\n"
+        f"5. NO 'Good morning' or fluff. Start immediately with the bullets."
     )
     
     try:
         response = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="gpt-3.5-turbo",
+            model=CONFIG["ai_model"], # Uses GPT-4o
         )
         return response.choices[0].message.content.strip()
     except Exception: return "Could not generate briefing."
@@ -176,11 +172,6 @@ def fetch_expert_insights():
     return results
 
 def fetch_reddit_buzz():
-    """
-    Scans ALL target subreddits.
-    Filters 'General' subs for AI keywords.
-    Consolidates Top 6 valid items into ONE summary.
-    """
     print("--- Checking Reddit Communities (Consolidated) ---")
     
     all_targets = CONFIG["reddit_tech_subs"] + CONFIG["reddit_general_subs"]
@@ -197,12 +188,10 @@ def fetch_reddit_buzz():
             feed = feedparser.parse(data)
             if not feed.entries: continue
             
-            # Check the top 5 posts from this sub
             found_count = 0
             for p in feed.entries[:5]:
                 clean_title = p.title.replace("[D]", "").strip()
                 
-                # FILTER: If it's a general sub, it MUST mention AI
                 if sub in CONFIG["reddit_general_subs"]:
                     full_text = clean_title.lower()
                     has_ai = any(k in full_text for k in CONFIG["expert_ai_keywords"])
@@ -213,7 +202,6 @@ def fetch_reddit_buzz():
                     "title": clean_title,
                     "link": p.link
                 })
-                # Max 2 posts per sub to ensure diversity
                 found_count += 1
                 if found_count >= 2: break
                 
@@ -221,11 +209,8 @@ def fetch_reddit_buzz():
 
     if not valid_candidates: return []
 
-    # Take Top 6 unique posts across all communities
-    # (RSS feed order is usually by score, so the first ones are highest ranked)
     final_selection = valid_candidates[:6]
     
-    # Synthesize
     post_context = ""
     links_html = "<br><strong>Trending Threads:</strong><ul>"
     
@@ -245,7 +230,7 @@ def fetch_reddit_buzz():
     try:
         response = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="gpt-3.5-turbo",
+            model=CONFIG["ai_model"], # Uses GPT-4o
         )
         ai_analysis = response.choices[0].message.content.strip()
         
@@ -336,7 +321,7 @@ def summarize_expert_post(title, raw_text):
     try:
         response = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="gpt-3.5-turbo",
+            model=CONFIG["ai_model"], # Uses GPT-4o
         )
         return response.choices[0].message.content.strip()
     except Exception: return "Summary failed."
@@ -354,7 +339,7 @@ def summarize_article(title, abstract, web_context):
     try:
         response = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model="gpt-3.5-turbo",
+            model=CONFIG["ai_model"], # Uses GPT-4o
         )
         return response.choices[0].message.content.strip()
     except Exception: return "Summary failed."
@@ -362,7 +347,7 @@ def summarize_article(title, abstract, web_context):
 # --- MAIN ---
 
 def main():
-    print("Starting Comprehensive Agency Scan...")
+    print(f"Starting Scan (Model: {CONFIG['ai_model']})...")
     seen_ids = get_seen_ids()
     
     # 1. Gather all content
