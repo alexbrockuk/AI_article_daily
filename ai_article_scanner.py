@@ -24,9 +24,7 @@ CONFIG = {
 
     "jmir_feed": "https://ai.jmir.org/feed/atom",
     
-    # EXPERT FEEDS WITH RELEVANCE FILTERING
-    # 'filter': True means "Only show me if it mentions AI"
-    # 'filter': False means "Show me everything they write"
+    # EXPERT FEEDS
     "expert_feeds": [
         {"name": "Ethan Mollick", "url": "https://www.oneusefulthing.org/feed", "filter": False},
         {"name": "Scott Galloway", "url": "https://www.profgalloway.com/feed/", "filter": True},
@@ -38,7 +36,6 @@ CONFIG = {
         {"name": "Simon Willison", "url": "https://simonwillison.net/atom/entries/", "filter": True}
     ],
 
-    # Keywords to check if 'filter' is True
     "expert_ai_keywords": [
         "ai ", "artificial intelligence", "llm", "gpt", "generative", 
         "machine learning", "neural", "algorithm", "robot", "agent", 
@@ -108,7 +105,36 @@ def is_relevant(title, abstract):
         if word in text: return True
     return False 
 
-# --- EXPERT VOICES SCANNER (Now with filtering) ---
+# --- NEW: THE EXECUTIVE BRIEFING GENERATOR ---
+def generate_daily_briefing(items):
+    """
+    Takes all the collected items and asks AI to write a 'Morning Briefing'
+    connecting the dots between them.
+    """
+    if not items: return "No major updates today."
+    
+    # Create a condensed list for the AI context window
+    context_list = ""
+    for item in items:
+        context_list += f"- [{item['source']}] {item['title']}: {item['summary'][:200]}\n"
+        
+    prompt = (
+        f"You are a Strategy Director at a top creative agency. "
+        f"Review these {len(items)} new AI insights found today:\n\n"
+        f"{context_list}\n\n"
+        f"TASK: Write a 'Morning Briefing' (max 3-4 sentences). "
+        f"Don't just list them. Synthesize the 'vibe'. Is there a common theme? "
+        f"Is it a technical day or a strategic day? What is the one thing I must know?"
+    )
+    
+    try:
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model="gpt-3.5-turbo",
+        )
+        return response.choices[0].message.content.strip()
+    except Exception: return "Could not generate briefing."
+
 def fetch_expert_insights():
     print("--- Checking Expert Voices ---")
     results = []
@@ -122,24 +148,16 @@ def fetch_expert_insights():
             )
             data = urllib.request.urlopen(req).read()
             feed = feedparser.parse(data)
-            
             if not feed.entries: continue
 
             latest = feed.entries[0]
             clean_id = latest.id if 'id' in latest else latest.link
             summary_text = latest.summary[:2500] if 'summary' in latest else latest.title
             
-            # --- NEW FILTERING LOGIC ---
             if expert['filter']:
-                # Combine title and summary for the check
                 full_text = (latest.title + " " + summary_text).lower()
-                # Check if ANY keyword is present
                 found_keyword = any(k in full_text for k in CONFIG["expert_ai_keywords"])
-                
-                if not found_keyword:
-                    print(f"       [Skipped] Post not about AI: {latest.title}")
-                    continue
-            # ---------------------------
+                if not found_keyword: continue
 
             results.append({
                 "source": f"Expert Voice: {expert['name']}",
@@ -148,7 +166,6 @@ def fetch_expert_insights():
                 "url": latest.link,
                 "raw_text": summary_text
             })
-            
         except Exception as e:
             print(f"   --> Failed to fetch {expert['name']}: {e}")
             
@@ -312,16 +329,8 @@ def main():
     print("Starting Comprehensive Agency Scan...")
     seen_ids = get_seen_ids()
     
-    # 1. Fetch Experts (Highest Priority)
-    experts = fetch_expert_insights()
-    
-    # 2. Fetch Reddit Buzz
-    reddit_buzz = fetch_reddit_buzz()
-    
-    # 3. Fetch Papers
-    papers = fetch_jmir_articles() + fetch_arxiv_articles()
-    
-    all_content = experts + reddit_buzz + papers
+    # 1. Gather all content
+    all_content = fetch_expert_insights() + fetch_reddit_buzz() + fetch_jmir_articles() + fetch_arxiv_articles()
     
     new_finds = []
     for item in all_content:
@@ -342,13 +351,23 @@ def main():
         time.sleep(2)
 
     if new_finds:
-        print(f"Found {len(new_finds)} items.")
-        email_body = f"<h2>Daily Agency/AI Insight Scan ({len(new_finds)})</h2>"
+        print(f"Found {len(new_finds)} items. Generating briefing...")
+        
+        # --- NEW: GENERATE DAILY BRIEFING ---
+        daily_briefing = generate_daily_briefing(new_finds)
+        
+        # Build Email
+        email_body = f"""
+        <div style="background-color:#f4f4f4; padding:15px; border-radius:5px; margin-bottom:20px;">
+            <h2 style="margin-top:0;">☕ Morning Briefing</h2>
+            <p style="font-size:16px; line-height:1.5;">{daily_briefing}</p>
+        </div>
+        """
+        
         for item in new_finds:
             clean_summary = item['summary'].replace('\n', '<br>')
-            
-            if "Expert" in item['source']: color = "#800080" # Purple for Experts
-            elif "r/" in item['source']: color = "#FF4500"   # Orange for Reddit
+            if "Expert" in item['source']: color = "#800080"
+            elif "r/" in item['source']: color = "#FF4500"
             else: color = "gray"
             
             email_body += f"""
@@ -357,7 +376,8 @@ def main():
             <h3><a href="{item['url']}">{item['title']}</a></h3>
             <p>{clean_summary}</p>
             """
-        send_email(f"AI Insights: {len(new_finds)} New Updates", email_body)
+        
+        send_email(f"AI Strategy Daily: {len(new_finds)} Updates", email_body)
     else:
         print("No new relevant insights today.")
 
