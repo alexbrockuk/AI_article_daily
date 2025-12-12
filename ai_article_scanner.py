@@ -20,10 +20,20 @@ CONFIG = {
     "seen_file": "seen_store.json",
     
     "scan_depth": 25,  
-    "max_email_items": 6, 
+    "max_email_items": 7, 
 
     "jmir_feed": "https://ai.jmir.org/feed/atom",
     
+    # NEW: Targeted Subreddits (The "Watercooler")
+    "reddit_targets": [
+        "ArtificialIntelligence",
+        "MachineLearning",
+        "ChatGPT",
+        "marketing",
+        "advertising",
+        "AgencyLife"
+    ],
+
     "arxiv_query": (
         "(cat:cs.HC OR cat:cs.CY OR cat:cs.SI) AND "
         "(all:advertising OR all:marketing OR all:brand OR "
@@ -31,12 +41,6 @@ CONFIG = {
         "all:persuasion OR all:misinformation OR all:social_media OR "
         "all:narrative OR all:creative OR all:adoption)"
     ),
-
-    # TWITTER/X TARGETS
-    "twitter_hashtags": [
-        "#GenerativeAI", "#LLM", "#AIArt", "#PromptEngineering", 
-        "#MarketingAI", "#AIEthics", "#AIUX"
-    ],
 
     "positive_keywords": [
         "communication", "agency", "marketing", "advertising", "brand", 
@@ -87,45 +91,46 @@ def is_relevant(title, abstract):
         if word in text: return True
     return False 
 
-# --- NEW: SEARCH ENGINE SIDE-DOOR FOR TWITTER ---
-def fetch_twitter_buzz():
+# --- NEW: REDDIT RSS SCANNER ---
+def fetch_reddit_buzz():
     """
-    Robust search: Looks for Reddit threads and News instead of X.com
-    (which blocks robots).
+    Directly scans Reddit RSS feeds for top daily discussions.
+    Bypasses search engines completely for reliability.
     """
-    print("--- Checking Community Buzz ---")
+    print("--- Checking Reddit Communities ---")
     
-    targets = random.sample(CONFIG["twitter_hashtags"], 2)
+    # Pick 2 random subreddits to check today
+    targets = random.sample(CONFIG["reddit_targets"], 2)
     buzz_findings = []
 
-    for tag in targets:
-        # Strip the hash for the search query (Search engines prefer "GenerativeAI" over "#GenerativeAI")
-        clean_tag = tag.replace("#", "")
-        
-        # SEARCH STRATEGY: Look for Reddit threads or News
-        # This is almost guaranteed to find results
-        query = f"{clean_tag} reddit news discussion"
-        
-        print(f"   --> Searching buzz for: {query}...")
+    for sub in targets:
+        # RSS URL for "Top posts of the day"
+        rss_url = f"https://www.reddit.com/r/{sub}/top/.rss?t=day"
+        print(f"   --> Scanning r/{sub}...")
         
         try:
-            # We use 'text' search which is broader and safer
-            results = DDGS().text(query, max_results=4)
+            # We must set a User-Agent or Reddit blocks the request
+            # We use urllib to fetch, then feedparser to parse
+            req = urllib.request.Request(
+                rss_url, 
+                headers={'User-Agent': 'Mozilla/5.0 (compatible; AgencyScanner/1.0)'}
+            )
+            data = urllib.request.urlopen(req).read()
+            feed = feedparser.parse(data)
             
-            if not results: 
-                print(f"   --> No results found for {tag}")
+            if not feed.entries:
+                print(f"   --> No trending posts in r/{sub}")
                 continue
 
-            # Synthesize the chatter
-            chatter_text = "\n".join([f"- {r['title']}: {r['body']}" for r in results])
+            # Take the top 3 post titles
+            top_posts = feed.entries[:3]
+            chatter_text = "\n".join([f"- {p.title}" for p in top_posts])
             
             prompt = (
-                f"I performed a web search for community discussions on the topic '{clean_tag}'.\n"
-                f"Identify the current sentiment or 'hot take' from these snippets.\n"
-                f"Ignore generic marketing. Look for debates, fears, or new tools.\n\n"
-                f"SNIPPETS:\n{chatter_text}\n\n"
-                f"OUTPUT:\n"
-                f"1-sentence summary of the current vibe."
+                f"Here are the top trending discussions from the subreddit r/{sub} today:\n"
+                f"{chatter_text}\n\n"
+                f"Identify the common theme or the most controversial topic.\n"
+                f"Provide a 1-sentence 'Vibe Check' for an agency strategist."
             )
             
             response = client.chat.completions.create(
@@ -135,16 +140,16 @@ def fetch_twitter_buzz():
             summary = response.choices[0].message.content.strip()
             
             buzz_findings.append({
-                "source": "Community Buzz", 
-                "id": f"buzz-{clean_tag}-{datetime.now().strftime('%Y%m%d')}",
-                "title": f"Hot Topic: {tag}",
-                "url": f"https://duckduckgo.com/?q={clean_tag}+reddit",
+                "source": f"r/{sub}", 
+                "id": f"reddit-{sub}-{datetime.now().strftime('%Y%m%d')}",
+                "title": f"Community Buzz: r/{sub}",
+                "url": f"https://www.reddit.com/r/{sub}/top/?t=day",
                 "summary": summary
             })
-            time.sleep(2)
+            time.sleep(1) # Be polite
             
         except Exception as e:
-            print(f"   --> Buzz search failed: {e}")
+            print(f"   --> Reddit scan failed: {e}")
             
     return buzz_findings
 
@@ -244,11 +249,11 @@ def main():
     # 1. Fetch Papers
     candidates = fetch_jmir_articles() + fetch_arxiv_articles()
     
-    # 2. Fetch Twitter Buzz (NEW SOURCE)
-    twitter_buzz = fetch_twitter_buzz()
+    # 2. Fetch Reddit Buzz (Replaces Search)
+    reddit_buzz = fetch_reddit_buzz()
     
-    # Combine (Twitter stuff goes first in the email as 'News')
-    all_content = twitter_buzz + candidates
+    # Combine (Reddit stuff goes first)
+    all_content = reddit_buzz + candidates
     
     new_finds = []
     for item in all_content:
@@ -258,7 +263,7 @@ def main():
 
         print(f"Processing: {item['title']}")
         
-        # If it's a paper, do the deep dive. If it's Twitter, we already summarized it.
+        # If it's a paper, do the deep dive.
         if "summary" not in item:
             web_ctx = get_web_context(item['title'])
             item["summary"] = summarize_article(item['title'], item['abstract'], web_ctx)
@@ -272,8 +277,8 @@ def main():
         email_body = f"<h2>Daily Agency/AI Insight Scan ({len(new_finds)})</h2>"
         for item in new_finds:
             clean_summary = item['summary'].replace('\n', '<br>')
-            # Color code sources: Blue for Twitter, Gray for Papers
-            color = "#1DA1F2" if "Twitter" in item['source'] else "gray"
+            # Color code sources: Orange for Reddit, Gray for Papers
+            color = "#FF4500" if "r/" in item['source'] else "gray"
             
             email_body += f"""
             <hr>
