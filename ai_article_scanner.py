@@ -90,36 +90,39 @@ def is_relevant(title, abstract):
 # --- NEW: SEARCH ENGINE SIDE-DOOR FOR TWITTER ---
 def fetch_twitter_buzz():
     """
-    Picks 2 random hashtags and checks X.com via DuckDuckGo.
-    Returns a 'Buzz Report' object if interesting stuff is found.
+    Broadened search: Looks for 'Community discussions' rather than just X.com
+    to avoid search engine indexing issues.
     """
-    print("--- Checking Twitter/X Buzz (via Search) ---")
+    print("--- Checking Community Buzz ---")
     
-    # Pick 2 random tags to keep it fresh daily
+    # We use the same hashtags, but look for broader conversation
     targets = random.sample(CONFIG["twitter_hashtags"], 2)
     buzz_findings = []
 
     for tag in targets:
-        # Search query: "site:x.com #GenerativeAI" (past day/week implied by 'fresh' search results)
-        query = f"site:x.com {tag}"
-        print(f"   --> Searching X for: {tag}...")
+        # NEW QUERY: Look for the tag + discussion keywords
+        # We explicitly exclude pinterest because it clutters results
+        query = f"{tag} discussion forum community -site:pinterest.com"
+        print(f"   --> Searching buzz for: {tag}...")
         
         try:
-            # We fetch top 5 results
+            # Try to get results
             results = DDGS().text(query, max_results=5)
-            if not results: continue
+            
+            if not results: 
+                print(f"   --> No results found for {tag}")
+                continue
 
             # Synthesize the chatter
             chatter_text = "\n".join([f"- {r['title']}: {r['body']}" for r in results])
             
-            # Ask OpenAI to summarize the "Vibe"
             prompt = (
-                f"I have scraped recent search results from X (Twitter) for the hashtag {tag}.\n"
-                f"Based on these snippets, what is the current hot topic or sentiment?\n"
-                f"Ignore generic spam. Focus on debates, new tools, or controversy.\n\n"
+                f"I performed a web search for community discussions on the topic '{tag}'.\n"
+                f"Identify the current sentiment or 'hot take' from these snippets.\n"
+                f"Ignore generic marketing. Look for debates, fears, or new tools.\n\n"
                 f"SNIPPETS:\n{chatter_text}\n\n"
                 f"OUTPUT:\n"
-                f"Provide a 1-sentence summary of what's happening."
+                f"1-sentence summary of the current vibe."
             )
             
             response = client.chat.completions.create(
@@ -129,16 +132,18 @@ def fetch_twitter_buzz():
             summary = response.choices[0].message.content.strip()
             
             buzz_findings.append({
-                "source": "X (Twitter) Trend",
-                "id": f"twitter-{tag}-{datetime.now().strftime('%Y%m%d')}", # Virtual ID
-                "title": f"Community Buzz: {tag}",
-                "url": f"https://x.com/search?q={tag.replace('#', '%23')}",
+                "source": "Community Buzz", 
+                "id": f"buzz-{tag}-{datetime.now().strftime('%Y%m%d')}",
+                "title": f"Hot Topic: {tag}",
+                # Search link so you can click to see the results yourself
+                "url": f"https://duckduckgo.com/?q={tag.replace('#', '%23')}",
                 "summary": summary
             })
+            # Sleep to be polite to the search engine
             time.sleep(2)
             
         except Exception as e:
-            print(f"   --> Twitter search failed: {e}")
+            print(f"   --> Buzz search failed: {e}")
             
     return buzz_findings
 
