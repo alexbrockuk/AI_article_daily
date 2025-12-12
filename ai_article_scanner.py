@@ -19,8 +19,11 @@ CONFIG = {
     "storage_dir": os.environ.get("AI_SCANNER_STORAGE", "ai_scanner_storage"),
     "seen_file": "seen_store.json",
     
-    # GPT-4o is faster and smarter, handling the synthesis much better.
-    "ai_model": "gpt-4o", 
+    # --- HYBRID MODEL STRATEGY ---
+    # "Junior Analyst": Cheap, fast, reads the raw data
+    "model_cheap": "gpt-4o-mini", 
+    # "Strategy Director": The new cutting-edge model for synthesis
+    "model_smart": "gpt-5.2",       
 
     "scan_depth": 25,  
     "max_email_items": 12,
@@ -46,7 +49,7 @@ CONFIG = {
         "compute", "model", "turing"
     ],
     
-    # REDDIT FILTERING
+    # REDDIT CONFIG
     "reddit_tech_subs": ["ArtificialIntelligence", "MachineLearning", "ChatGPT", "OpenAI"],
     "reddit_general_subs": ["marketing", "advertising", "AgencyLife"],
 
@@ -107,7 +110,7 @@ def is_relevant(title, abstract):
         if word in text: return True
     return False 
 
-# --- BRIEFING GENERATOR (Using GPT-4o) ---
+# --- BRIEFING GENERATOR (Uses GPT-5.2) ---
 def generate_daily_briefing(items):
     if not items: return "No major updates today."
     
@@ -120,20 +123,22 @@ def generate_daily_briefing(items):
         f"CONTEXT:\n{context_list}\n\n"
         f"TASK: Synthesize this into a 3-4 bullet point executive summary.\n"
         f"RULES FOR SYNTHESIS:\n"
-        f"1. DO NOT simply list every item. Group related items into themes (e.g. 'GPT-5 launch and Reddit reaction' is one point).\n"
+        f"1. DO NOT simply list every item. Group related items into themes.\n"
         f"2. IGNORE outliers or niche items unless they signal a massive shift.\n"
         f"3. Focus on the 'So What': Why does this combination of news matter to an agency?\n"
         f"4. Be opinionated and strategic.\n"
-        f"5. NO 'Good morning' or fluff. Start immediately with the bullets."
+        f"5. Start immediately with the bullets."
     )
     
     try:
         response = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model=CONFIG["ai_model"], # Uses GPT-4o
+            model=CONFIG["model_smart"], # <--- USES GPT-5.2
         )
         return response.choices[0].message.content.strip()
-    except Exception: return "Could not generate briefing."
+    except Exception as e:
+        print(f"Briefing generation failed: {e}")
+        return "Could not generate briefing."
 
 def fetch_expert_insights():
     print("--- Checking Expert Voices ---")
@@ -230,7 +235,7 @@ def fetch_reddit_buzz():
     try:
         response = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model=CONFIG["ai_model"], # Uses GPT-4o
+            model=CONFIG["model_cheap"], # <--- USES CHEAP MODEL (4o-mini)
         )
         ai_analysis = response.choices[0].message.content.strip()
         
@@ -321,7 +326,7 @@ def summarize_expert_post(title, raw_text):
     try:
         response = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model=CONFIG["ai_model"], # Uses GPT-4o
+            model=CONFIG["model_cheap"], # <--- USES CHEAP MODEL (4o-mini)
         )
         return response.choices[0].message.content.strip()
     except Exception: return "Summary failed."
@@ -339,7 +344,7 @@ def summarize_article(title, abstract, web_context):
     try:
         response = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
-            model=CONFIG["ai_model"], # Uses GPT-4o
+            model=CONFIG["model_cheap"], # <--- USES CHEAP MODEL (4o-mini)
         )
         return response.choices[0].message.content.strip()
     except Exception: return "Summary failed."
@@ -347,7 +352,7 @@ def summarize_article(title, abstract, web_context):
 # --- MAIN ---
 
 def main():
-    print(f"Starting Scan (Model: {CONFIG['ai_model']})...")
+    print(f"Starting Scan (Hybrid Models: {CONFIG['model_cheap']} / {CONFIG['model_smart']})...")
     seen_ids = get_seen_ids()
     
     # 1. Gather all content
