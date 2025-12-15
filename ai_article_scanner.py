@@ -20,8 +20,8 @@ CONFIG = {
     "seen_file": "seen_store.json",
     
     # Hybrid Model Strategy
-    "model_cheap": "gpt-4o-mini", # Volume processing
-    "model_smart": "gpt-5.2",     # Strategic synthesis
+    "model_cheap": "gpt-4o-mini", # For reading papers/threads (Volume)
+    "model_smart": "gpt-5.2",     # For the Morning Briefing (Strategy)
 
     "scan_depth": 25,  
     "max_email_items": 12,
@@ -83,22 +83,12 @@ client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 # --- HELPER: CLEANER ---
 def clean_llm_output(text):
-    """
-    Removes Markdown distractions (** , ###) and ensures clean HTML.
-    """
     if not text: return ""
-    # Strip markdown bolding
-    text = text.replace("**", "") 
-    # Strip markdown headers
-    text = text.replace("### ", "").replace("###", "")
-    # Ensure headers we want are bolded in HTML
-    keywords = ["Agency Implication:", "Buzz Check:", "Themes:", "Meta-Narrative:"]
+    text = text.replace("**", "").replace("### ", "").replace("###", "")
+    keywords = ["Agency Implication:", "Buzz Check:", "Themes:", "The Debate:", "The Concept:"]
     for k in keywords:
         text = text.replace(k, f"<b>{k}</b>")
-    
-    # Handle newlines
-    text = text.replace("\n", "<br>")
-    return text
+    return text.replace("\n", "<br>")
 
 # --- FUNCTIONS ---
 
@@ -125,24 +115,24 @@ def is_relevant(title, abstract):
         if word in text: return True
     return False 
 
-# --- BRIEFING GENERATOR (Revised for Brevity & HTML) ---
+# --- BRIEFING GENERATOR (Expansive but Focused) ---
 def generate_daily_briefing(items):
     if not items: return "No major updates today."
     
     context_list = ""
     for item in items:
-        context_list += f"- [{item['source']}] {item['title']}: {item['summary'][:250]}\n"
+        context_list += f"- [{item['source']}] {item['title']}: {item['summary'][:300]}\n"
         
     prompt = (
         f"You are a Strategy Director. Review these {len(items)} insights.\n\n"
         f"CONTEXT:\n{context_list}\n\n"
-        f"TASK: Write an Executive Briefing in HTML format.\n"
+        f"TASK: Write an Executive Briefing in HTML.\n"
         f"RULES:\n"
-        f"1. Maximum 3 bullet points. <br> separated.\n"
-        f"2. Max 25 words per bullet. Be ruthless. Telegraph style.\n"
-        f"3. NO Markdown symbols (** or ##). Use <b> tags only if necessary.\n"
-        f"4. Synthesize themes, do not list items.\n"
-        f"5. Start directly with the first bullet."
+        f"1. Create 3-4 distinct bullet points.\n"
+        f"2. STYLE: Don't be telegraphic. Be explanatory but concise (2-3 sentences per point).\n"
+        f"3. Explain the 'Why': Connect the news to broader agency strategy or client risks.\n"
+        f"4. Grouping: If two items are about the same topic, combine them into one strong point.\n"
+        f"5. NO Markdown symbols (**). Use <b> tags for emphasis."
     )
     
     try:
@@ -150,7 +140,6 @@ def generate_daily_briefing(items):
             messages=[{"role": "user", "content": prompt}],
             model=CONFIG["model_smart"], 
         )
-        # We don't use the standard cleaner here because we asked for specific HTML
         return response.choices[0].message.content.strip().replace("**", "")
     except Exception: return "Could not generate briefing."
 
@@ -189,6 +178,9 @@ def fetch_expert_insights():
     return results
 
 def fetch_reddit_buzz():
+    """
+    Returns specific HOT threads individually, rather than one summary.
+    """
     print("--- Checking Reddit Communities ---")
     all_targets = CONFIG["reddit_tech_subs"] + CONFIG["reddit_general_subs"]
     valid_candidates = []
@@ -204,45 +196,26 @@ def fetch_reddit_buzz():
             if not feed.entries: continue
             
             found_count = 0
-            for p in feed.entries[:5]:
+            for p in feed.entries[:5]: # Check top 5
                 clean_title = p.title.replace("[D]", "").strip()
+                
+                # Relevance Filter
                 if sub in CONFIG["reddit_general_subs"]:
                     if not any(k in clean_title.lower() for k in CONFIG["expert_ai_keywords"]): continue
-                valid_candidates.append({"sub": sub, "title": clean_title, "link": p.link})
+                
+                valid_candidates.append({
+                    "source": f"r/{sub}",
+                    "id": p.id, # Use Reddit ID to avoid repeats
+                    "title": clean_title,
+                    "url": p.link,
+                    "raw_text": clean_title # Reddit titles are often the whole summary
+                })
                 found_count += 1
-                if found_count >= 2: break
+                if found_count >= 2: break # Max 2 per sub
         except Exception: continue
 
-    if not valid_candidates: return []
-    final_selection = valid_candidates[:6]
-    
-    post_context = ""
-    links_html = "<br><strong>Trending Threads:</strong><ul>"
-    for p in final_selection:
-        post_context += f"- [r/{p['sub']}] {p['title']}\n"
-        links_html += f"<li><strong>r/{p['sub']}:</strong> <a href='{p['link']}' style='text-decoration:none; color:#0066cc;'>{p['title']}</a></li>"
-    links_html += "</ul>"
-
-    prompt = (
-        f"Review these trending discussions.\nPOSTS:\n{post_context}\n\n"
-        f"TASK: Provide 'Meta-Narrative' (Mood/Theme) and 'Agency Implication'.\n"
-        f"FORMAT: Plain text. No markdown (**). Use HTML <b> for headers."
-    )
-    
-    try:
-        response = client.chat.completions.create(
-            messages=[{"role": "user", "content": prompt}],
-            model=CONFIG["model_cheap"],
-        )
-        ai_analysis = clean_llm_output(response.choices[0].message.content.strip())
-        return [{
-            "source": "Community Pulse: Reddit", 
-            "id": f"reddit-consolidated-{datetime.now().strftime('%Y%m%d')}",
-            "title": "Cross-Community AI Sentiment",
-            "url": "https://www.reddit.com/r/ArtificialIntelligence/top/?t=day",
-            "summary": ai_analysis + links_html
-        }]
-    except Exception: return []
+    # Return top 3 unique threads
+    return valid_candidates[:3]
 
 def get_web_context(topic_title):
     try:
@@ -306,6 +279,8 @@ def fetch_arxiv_articles():
         return results
     except Exception: return []
 
+# --- SUMMARIZERS ---
+
 def summarize_expert_post(title, raw_text):
     prompt = (
         f"Summarize this essay for an agency strategist.\nTITLE: {title}\nTEXT: {raw_text}\n\n"
@@ -320,10 +295,12 @@ def summarize_expert_post(title, raw_text):
         return clean_llm_output(response.choices[0].message.content.strip())
     except Exception: return "Summary failed."
 
-def summarize_article(title, abstract, web_context):
+def summarize_reddit_post(title):
+    # Specialized prompt for individual Reddit threads
     prompt = (
-        f"Analyze this paper.\nWEB CONTEXT: {web_context}\nPAPER: {title}\n{abstract}\n\n"
-        f"TASK: 1. Summarize (2 bullets). 2. 'Buzz Check'. 3. 'Agency Implication'.\n"
+        f"Here is a trending Reddit discussion title: '{title}'.\n"
+        f"TASK: 1. 'The Debate': What is the likely argument or excitement about?\n"
+        f"2. 'Agency Implication': Why should a creative agency care?\n"
         f"FORMAT: Plain text. No markdown (**). Use <b> for headers."
     )
     try:
@@ -334,61 +311,8 @@ def summarize_article(title, abstract, web_context):
         return clean_llm_output(response.choices[0].message.content.strip())
     except Exception: return "Summary failed."
 
-# --- MAIN ---
-
-def main():
-    print(f"Starting Scan...")
-    seen_ids = get_seen_ids()
-    
-    all_content = fetch_expert_insights() + fetch_reddit_buzz() + fetch_jmir_articles() + fetch_arxiv_articles()
-    
-    new_finds = []
-    for item in all_content:
-        if item['id'] in seen_ids: continue
-        if len(new_finds) >= CONFIG["max_email_items"]: break
-
-        print(f"Processing: {item['title']}")
-        
-        if "summary" not in item:
-            if "Expert Voice" in item["source"]:
-                item["summary"] = summarize_expert_post(item['title'], item['raw_text'])
-            else:
-                web_ctx = get_web_context(item['title'])
-                item["summary"] = summarize_article(item['title'], item['abstract'], web_ctx)
-        
-        new_finds.append(item)
-        save_seen_id(item['id'], seen_ids)
-        time.sleep(2)
-
-    if new_finds:
-        print(f"Found {len(new_finds)} items. Generating briefing...")
-        
-        # Clean briefing explicitly one last time
-        raw_briefing = generate_daily_briefing(new_finds)
-        clean_briefing = raw_briefing.replace("**", "").replace("###", "")
-        
-        email_body = f"""
-        <div style="background-color:#f0f4f8; padding:20px; border-radius:8px; border-left: 5px solid #2c3e50; margin-bottom:25px; font-family: sans-serif;">
-            <h3 style="margin-top:0; color:#2c3e50;">☕ Morning Briefing</h3>
-            <div style="font-size:15px; line-height:1.6; color:#333;">{clean_briefing}</div>
-        </div>
-        """
-        
-        for item in new_finds:
-            if "Expert" in item['source']: color = "#800080"
-            elif "Community Pulse" in item['source']: color = "#FF4500"
-            else: color = "gray"
-            
-            email_body += f"""
-            <hr style="border:0; border-top:1px solid #eee; margin: 20px 0;">
-            <p style="color:{color}; font-weight:bold; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:5px;">{item['source']}</p>
-            <h3 style="margin-top:0; margin-bottom:10px;"><a href="{item['url']}" style="color:#0066cc; text-decoration:none;">{item['title']}</a></h3>
-            <div style="font-size:14px; line-height:1.5; color:#444;">{item['summary']}</div>
-            """
-        
-        send_email(f"AI Strategy Daily: {len(new_finds)} Updates", email_body)
-    else:
-        print("No new relevant insights today.")
-
-if __name__ == "__main__":
-    main()
+def summarize_article(title, abstract, web_context):
+    # Specialized prompt for "Morning Skim" conceptualization
+    prompt = (
+        f"Explain this research paper to a NON-TECHNICAL Strategy Director.\n"
+        f"PAPER: {title}\
