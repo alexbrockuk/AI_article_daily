@@ -315,4 +315,81 @@ def summarize_article(title, abstract, web_context):
     # Specialized prompt for "Morning Skim" conceptualization
     prompt = (
         f"Explain this research paper to a NON-TECHNICAL Strategy Director.\n"
-        f"PAPER: {title}\
+        f"PAPER: {title}\nABSTRACT: {abstract}\n\n"
+        f"RULES:\n"
+        f"1. NO JARGON. Do not use words like 'weights', 'loss function', or 'transformer' without defining them simply.\n"
+        f"2. Conceptualize: What is the *capability* or *risk* being described?\n"
+        f"TASK:\n"
+        f"1. 'The Concept': Simple English explanation of what they did.\n"
+        f"2. 'Why it matters': The practical upshot for creative/business strategy.\n"
+        f"FORMAT: Plain text. No markdown (**). Use <b> for headers."
+    )
+    try:
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model=CONFIG["model_cheap"],
+        )
+        return clean_llm_output(response.choices[0].message.content.strip())
+    except Exception: return "Summary failed."
+
+# --- MAIN ---
+
+def main():
+    print(f"Starting Scan...")
+    seen_ids = get_seen_ids()
+    
+    # 1. Gather Content
+    all_content = fetch_expert_insights() + fetch_reddit_buzz() + fetch_jmir_articles() + fetch_arxiv_articles()
+    
+    new_finds = []
+    for item in all_content:
+        if item['id'] in seen_ids: continue
+        if len(new_finds) >= CONFIG["max_email_items"]: break
+
+        print(f"Processing: {item['title']}")
+        
+        # 2. Generate Summaries based on Type
+        if "summary" not in item:
+            if "Expert Voice" in item["source"]:
+                item["summary"] = summarize_expert_post(item['title'], item['raw_text'])
+            elif "r/" in item["source"]:
+                item["summary"] = summarize_reddit_post(item['title'])
+            else:
+                web_ctx = get_web_context(item['title'])
+                item["summary"] = summarize_article(item['title'], item['abstract'], web_ctx)
+        
+        new_finds.append(item)
+        save_seen_id(item['id'], seen_ids)
+        time.sleep(2)
+
+    if new_finds:
+        print(f"Found {len(new_finds)} items. Generating briefing...")
+        
+        raw_briefing = generate_daily_briefing(new_finds)
+        clean_briefing = raw_briefing.replace("**", "").replace("###", "")
+        
+        email_body = f"""
+        <div style="background-color:#f0f4f8; padding:20px; border-radius:8px; border-left: 5px solid #2c3e50; margin-bottom:25px; font-family: sans-serif;">
+            <h3 style="margin-top:0; color:#2c3e50;">☕ Morning Briefing</h3>
+            <div style="font-size:15px; line-height:1.6; color:#333;">{clean_briefing}</div>
+        </div>
+        """
+        
+        for item in new_finds:
+            if "Expert" in item['source']: color = "#800080"
+            elif "r/" in item['source']: color = "#FF4500"
+            else: color = "gray"
+            
+            email_body += f"""
+            <hr style="border:0; border-top:1px solid #eee; margin: 20px 0;">
+            <p style="color:{color}; font-weight:bold; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:5px;">{item['source']}</p>
+            <h3 style="margin-top:0; margin-bottom:10px;"><a href="{item['url']}" style="color:#0066cc; text-decoration:none;">{item['title']}</a></h3>
+            <div style="font-size:14px; line-height:1.5; color:#444;">{item['summary']}</div>
+            """
+        
+        send_email(f"AI Strategy Daily: {len(new_finds)} Updates", email_body)
+    else:
+        print("No new relevant insights today.")
+
+if __name__ == "__main__":
+    main()
