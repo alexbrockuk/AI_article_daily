@@ -20,8 +20,8 @@ CONFIG = {
     "seen_file": "seen_store.json",
     
     # Hybrid Model Strategy
-    "model_cheap": "gpt-4o-mini", # For reading papers/threads (Volume)
-    "model_smart": "gpt-5.2",     # For the Morning Briefing (Strategy)
+    "model_cheap": "gpt-4o-mini", # Volume processing
+    "model_smart": "gpt-5.2",     # Strategic synthesis
 
     "scan_depth": 25,  
     "max_email_items": 12,
@@ -115,7 +115,7 @@ def is_relevant(title, abstract):
         if word in text: return True
     return False 
 
-# --- BRIEFING GENERATOR (Expansive but Focused) ---
+# --- BRIEFING GENERATOR ---
 def generate_daily_briefing(items):
     if not items: return "No major updates today."
     
@@ -142,6 +142,81 @@ def generate_daily_briefing(items):
         )
         return response.choices[0].message.content.strip().replace("**", "")
     except Exception: return "Could not generate briefing."
+
+# --- REDDIT DEEP DIVE FUNCTIONS ---
+
+def fetch_reddit_discussion(url):
+    """
+    Fetches the JSON version of a Reddit thread to get the actual comments.
+    """
+    try:
+        # Append .json to get the raw data
+        json_url = f"{url.rstrip('/')}.json"
+        req = urllib.request.Request(
+            json_url, 
+            headers={'User-Agent': 'Mozilla/5.0 (compatible; AgencyScanner/1.0)'}
+        )
+        response = urllib.request.urlopen(req).read()
+        data = json.loads(response)
+        
+        # Reddit JSON structure: [0] is post, [1] is comments
+        post_data = data[0]['data']['children'][0]['data']
+        comments_data = data[1]['data']['children']
+        
+        # 1. Get the Post Body (selftext)
+        body = post_data.get('selftext', '')[:1000] # Cap at 1000 chars
+        
+        # 2. Get Top 5 Comments
+        comments_text = ""
+        for i, c in enumerate(comments_data[:5]):
+            if 'data' in c and 'body' in c['data']:
+                comments_text += f"Comment {i+1}: {c['data']['body'][:300]}\n"
+        
+        full_transcript = f"OP BODY: {body}\n\nTOP COMMENTS:\n{comments_text}"
+        return full_transcript
+        
+    except Exception as e:
+        print(f"Failed to fetch Reddit comments: {e}")
+        return "Could not fetch discussion."
+
+def fetch_reddit_buzz():
+    print("--- Checking Reddit Communities ---")
+    all_targets = CONFIG["reddit_tech_subs"] + CONFIG["reddit_general_subs"]
+    valid_candidates = []
+
+    for sub in all_targets:
+        try:
+            req = urllib.request.Request(
+                f"https://www.reddit.com/r/{sub}/top/.rss?t=day", 
+                headers={'User-Agent': 'Mozilla/5.0 (compatible; AgencyScanner/1.0)'}
+            )
+            data = urllib.request.urlopen(req).read()
+            feed = feedparser.parse(data)
+            if not feed.entries: continue
+            
+            found_count = 0
+            for p in feed.entries[:5]: # Check top 5
+                clean_title = p.title.replace("[D]", "").strip()
+                
+                # Relevance Filter
+                if sub in CONFIG["reddit_general_subs"]:
+                    if not any(k in clean_title.lower() for k in CONFIG["expert_ai_keywords"]): continue
+                
+                # --- NEW: DEEP FETCH ---
+                # We save the basic info now, but we'll fetch details later in the main loop
+                # to avoid holding up this scanning loop too long.
+                valid_candidates.append({
+                    "source": f"r/{sub}",
+                    "id": p.id,
+                    "title": clean_title,
+                    "url": p.link,
+                    "raw_text": "" # Placeholder, we will fill this in Main
+                })
+                found_count += 1
+                if found_count >= 2: break 
+        except Exception: continue
+
+    return valid_candidates[:3]
 
 def fetch_expert_insights():
     print("--- Checking Expert Voices ---")
@@ -176,46 +251,6 @@ def fetch_expert_insights():
             })
         except Exception: continue
     return results
-
-def fetch_reddit_buzz():
-    """
-    Returns specific HOT threads individually, rather than one summary.
-    """
-    print("--- Checking Reddit Communities ---")
-    all_targets = CONFIG["reddit_tech_subs"] + CONFIG["reddit_general_subs"]
-    valid_candidates = []
-
-    for sub in all_targets:
-        try:
-            req = urllib.request.Request(
-                f"https://www.reddit.com/r/{sub}/top/.rss?t=day", 
-                headers={'User-Agent': 'Mozilla/5.0 (compatible; AgencyScanner/1.0)'}
-            )
-            data = urllib.request.urlopen(req).read()
-            feed = feedparser.parse(data)
-            if not feed.entries: continue
-            
-            found_count = 0
-            for p in feed.entries[:5]: # Check top 5
-                clean_title = p.title.replace("[D]", "").strip()
-                
-                # Relevance Filter
-                if sub in CONFIG["reddit_general_subs"]:
-                    if not any(k in clean_title.lower() for k in CONFIG["expert_ai_keywords"]): continue
-                
-                valid_candidates.append({
-                    "source": f"r/{sub}",
-                    "id": p.id, # Use Reddit ID to avoid repeats
-                    "title": clean_title,
-                    "url": p.link,
-                    "raw_text": clean_title # Reddit titles are often the whole summary
-                })
-                found_count += 1
-                if found_count >= 2: break # Max 2 per sub
-        except Exception: continue
-
-    # Return top 3 unique threads
-    return valid_candidates[:3]
 
 def get_web_context(topic_title):
     try:
@@ -295,12 +330,17 @@ def summarize_expert_post(title, raw_text):
         return clean_llm_output(response.choices[0].message.content.strip())
     except Exception: return "Summary failed."
 
-def summarize_reddit_post(title):
-    # Specialized prompt for individual Reddit threads
+def summarize_reddit_post(title, context):
+    """
+    Uses the real comments to generate the summary.
+    """
     prompt = (
-        f"Here is a trending Reddit discussion title: '{title}'.\n"
-        f"TASK: 1. 'The Debate': What is the likely argument or excitement about?\n"
-        f"2. 'Agency Implication': Why should a creative agency care?\n"
+        f"Analyze this Reddit discussion.\n"
+        f"TITLE: {title}\n"
+        f"DISCUSSION CONTENT:\n{context}\n\n"
+        f"TASK:\n"
+        f"1. 'The Debate': What is the main point of contention or excitement in the comments?\n"
+        f"2. 'Agency Implication': Why does this sentiment matter for a creative/strategy agency?\n"
         f"FORMAT: Plain text. No markdown (**). Use <b> for headers."
     )
     try:
@@ -312,7 +352,6 @@ def summarize_reddit_post(title):
     except Exception: return "Summary failed."
 
 def summarize_article(title, abstract, web_context):
-    # Specialized prompt for "Morning Skim" conceptualization
     prompt = (
         f"Explain this research paper to a NON-TECHNICAL Strategy Director.\n"
         f"PAPER: {title}\nABSTRACT: {abstract}\n\n"
@@ -348,12 +387,19 @@ def main():
 
         print(f"Processing: {item['title']}")
         
-        # 2. Generate Summaries based on Type
+        # 2. Deep Fetch for Reddit (Get the real comments)
+        if "r/" in item["source"]:
+             # We fetch the discussion text NOW, before summarizing
+             discussion_text = fetch_reddit_discussion(item['url'])
+             item['raw_text'] = discussion_text
+
+        # 3. Generate Summaries based on Type
         if "summary" not in item:
             if "Expert Voice" in item["source"]:
                 item["summary"] = summarize_expert_post(item['title'], item['raw_text'])
             elif "r/" in item["source"]:
-                item["summary"] = summarize_reddit_post(item['title'])
+                # Pass the DEEP text we just fetched
+                item["summary"] = summarize_reddit_post(item['title'], item['raw_text'])
             else:
                 web_ctx = get_web_context(item['title'])
                 item["summary"] = summarize_article(item['title'], item['abstract'], web_ctx)
