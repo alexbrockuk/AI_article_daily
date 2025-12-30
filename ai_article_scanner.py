@@ -248,4 +248,209 @@ def fetch_expert_insights():
                 "source": f"Expert Voice: {expert['name']}",
                 "id": clean_id,
                 "title": latest.title,
-                "url": latest.
+                "url": latest.link,
+                "raw_text": summary_text
+            })
+        except Exception: continue
+    return results
+
+def get_web_context(topic_title):
+    try:
+        results = DDGS().text(topic_title, max_results=3)
+        if not results: return "No immediate news found."
+        context = "Web Findings:\n"
+        for r in results: context += f"- {r['title']}: {r['body']}\n"
+        return context
+    except Exception: return "Web search failed."
+
+def send_email(subject, body):
+    if not CONFIG["email_sender"] or not CONFIG["email_password"]:
+        print("Skipping email: Credentials not set.")
+        return
+    msg = MIMEMultipart()
+    msg['From'] = CONFIG["email_sender"]
+    msg['To'] = CONFIG["email_recipient"]
+    msg['Subject'] = subject
+    msg.attach(MIMEText(body, 'html'))
+    try:
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(CONFIG["email_sender"], CONFIG["email_password"])
+        server.sendmail(CONFIG["email_sender"], CONFIG["email_recipient"], msg.as_string())
+        server.quit()
+        print("Email sent successfully!")
+    except Exception as e:
+        print(f"Email failed: {e}")
+
+def fetch_jmir_articles():
+    try:
+        feed = feedparser.parse(CONFIG["jmir_feed"])
+        results = []
+        for entry in feed.entries[:CONFIG["scan_depth"]]:
+            if is_relevant(entry.title, entry.summary):
+                results.append({
+                    "source": "JMIR AI",
+                    "id": entry.id.strip("/").split("/")[-1],
+                    "title": entry.title,
+                    "abstract": entry.summary,
+                    "url": entry.link
+                })
+        return results
+    except Exception: return []
+
+def fetch_arxiv_articles():
+    query = CONFIG["arxiv_query"].replace(" ", "+").replace("(", "%28").replace(")", "%29")
+    try:
+        response = urllib.request.urlopen(f'http://export.arxiv.org/api/query?search_query={query}&start=0&max_results={CONFIG["scan_depth"]}&sortBy=submittedDate&sortOrder=descending').read()
+        feed = feedparser.parse(response)
+        results = []
+        for entry in feed.entries:
+            if is_relevant(entry.title, entry.summary):
+                results.append({
+                    "source": "arXiv",
+                    "id": entry.id.split('/abs/')[-1].split('v')[0],
+                    "title": entry.title.replace('\n', ' '),
+                    "abstract": entry.summary.replace('\n', ' '),
+                    "url": entry.link
+                })
+        return results
+    except Exception: return []
+
+# --- SUMMARIZERS ---
+
+def summarize_expert_post(title, raw_text):
+    prompt = (
+        f"Summarize this essay for an agency strategist.\nTITLE: {title}\nTEXT: {raw_text}\n\n"
+        f"TASK: 1. Core Thesis (1 sentence). 2. Agency Takeaway (1 sentence).\n"
+        f"FORMAT: Plain text. No markdown (**). Use <b> for headers."
+    )
+    try:
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model=CONFIG["model_cheap"],
+        )
+        return clean_llm_output(response.choices[0].message.content.strip())
+    except Exception: return "Summary failed."
+
+def summarize_reddit_post(title, context):
+    """
+    Analyzes Reddit context. Handles cases where context is missing via fallback.
+    """
+    # Fallback Logic: If scraping failed, context will be short/generic
+    if not context or "Web Findings" in context:
+        prompt_intro = f"We could not read the specific comments, but here is the topic context:\n{context}\n"
+        task_instruction = "Based on this general topic, explain the likely controversy or strategic importance."
+    else:
+        prompt_intro = f"DISCUSSION TRANSCRIPT:\n{context}\n"
+        task_instruction = "Based on these real comments, summarize the specific debate."
+
+    prompt = (
+        f"Analyze this Reddit discussion.\n"
+        f"TITLE: {title}\n{prompt_intro}\n"
+        f"TASK:\n"
+        f"1. 'The Debate': {task_instruction}\n"
+        f"2. 'Agency Implication': Why should a creative/strategy agency care?\n"
+        f"FORMAT: Plain text. No markdown (**). Use <b> for headers."
+    )
+    try:
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model=CONFIG["model_cheap"],
+        )
+        return clean_llm_output(response.choices[0].message.content.strip())
+    except Exception: return "Summary failed."
+
+def summarize_article(title, abstract, web_context):
+    prompt = (
+        f"Explain this research paper to a NON-TECHNICAL Strategy Director.\n"
+        f"PAPER: {title}\nABSTRACT: {abstract}\n\n"
+        f"RULES:\n"
+        f"1. NO JARGON. Do not use words like 'weights', 'loss function', or 'transformer' without defining them simply.\n"
+        f"2. Conceptualize: What is the *capability* or *risk* being described?\n"
+        f"TASK:\n"
+        f"1. 'The Concept': Simple English explanation of what they did.\n"
+        f"2. 'Why it matters': The practical upshot for creative/business strategy.\n"
+        f"FORMAT: Plain text. No markdown (**). Use <b> for headers."
+    )
+    try:
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": prompt}],
+            model=CONFIG["model_cheap"],
+        )
+        return clean_llm_output(response.choices[0].message.content.strip())
+    except Exception: return "Summary failed."
+
+# --- MAIN ---
+
+def main():
+    print(f"Starting Scan...")
+    seen_ids = get_seen_ids()
+    
+    # 1. Gather Content
+    all_content = fetch_expert_insights() + fetch_reddit_buzz() + fetch_jmir_articles() + fetch_arxiv_articles()
+    
+    new_finds = []
+    for item in all_content:
+        if item['id'] in seen_ids: continue
+        if len(new_finds) >= CONFIG["max_email_items"]: break
+
+        print(f"Processing: {item['title']}")
+        
+        # 2. Deep Fetch for Reddit (Get the real comments)
+        if "r/" in item["source"]:
+             # Try to get real comments
+             discussion_text = fetch_reddit_discussion(item['url'])
+             
+             # If Reddit blocked us (discussion_text is None), FALLBACK to Web Search
+             if discussion_text is None:
+                 print(f"   --> Reddit blocked JSON. Falling back to Web Search...")
+                 web_ctx = get_web_context(item['title'] + " reddit discussion")
+                 item['raw_text'] = f"Reddit scraping failed. Web Search Context:\n{web_ctx}"
+             else:
+                 item['raw_text'] = discussion_text
+
+        # 3. Generate Summaries based on Type
+        if "summary" not in item:
+            if "Expert Voice" in item["source"]:
+                item["summary"] = summarize_expert_post(item['title'], item['raw_text'])
+            elif "r/" in item["source"]:
+                item["summary"] = summarize_reddit_post(item['title'], item['raw_text'])
+            else:
+                web_ctx = get_web_context(item['title'])
+                item["summary"] = summarize_article(item['title'], item['abstract'], web_ctx)
+        
+        new_finds.append(item)
+        save_seen_id(item['id'], seen_ids)
+        time.sleep(2)
+
+    if new_finds:
+        print(f"Found {len(new_finds)} items. Generating briefing...")
+        
+        raw_briefing = generate_daily_briefing(new_finds)
+        clean_briefing = raw_briefing.replace("**", "").replace("###", "")
+        
+        email_body = f"""
+        <div style="background-color:#f0f4f8; padding:20px; border-radius:8px; border-left: 5px solid #2c3e50; margin-bottom:25px; font-family: sans-serif;">
+            <h3 style="margin-top:0; color:#2c3e50;">☕ Morning Briefing</h3>
+            <div style="font-size:15px; line-height:1.6; color:#333;">{clean_briefing}</div>
+        </div>
+        """
+        
+        for item in new_finds:
+            if "Expert" in item['source']: color = "#800080"
+            elif "r/" in item['source']: color = "#FF4500"
+            else: color = "gray"
+            
+            email_body += f"""
+            <hr style="border:0; border-top:1px solid #eee; margin: 20px 0;">
+            <p style="color:{color}; font-weight:bold; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:5px;">{item['source']}</p>
+            <h3 style="margin-top:0; margin-bottom:10px;"><a href="{item['url']}" style="color:#0066cc; text-decoration:none;">{item['title']}</a></h3>
+            <div style="font-size:14px; line-height:1.5; color:#444;">{item['summary']}</div>
+            """
+        
+        send_email(f"AI Strategy Daily: {len(new_finds)} Updates", email_body)
+    else:
+        print("No new relevant insights today.")
+
+if __name__ == "__main__":
+    main()
