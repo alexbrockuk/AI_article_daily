@@ -147,42 +147,50 @@ def generate_daily_briefing(items):
 
 def fetch_reddit_discussion(url):
     """
-    Fetches the JSON version of a Reddit thread to get the actual comments.
-    Includes logic to strip query parameters to prevent 404s.
+    Fetches the JSON version of a Reddit thread.
+    Handles 'Link Posts' (empty body) by injecting the external URL.
     """
     try:
-        # 1. Clean URL: Remove '?source=rss' and other params
         clean_url = url.split('?')[0]
-        # 2. Append .json
         json_url = f"{clean_url.rstrip('/')}.json"
         
+        # New User-Agent to avoid generic blocks
         req = urllib.request.Request(
             json_url, 
-            # Use a very generic browser User-Agent to avoid blocking
-            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+            headers={'User-Agent': 'python:agency-scanner:v1.0 (by /u/agency_bot)'}
         )
         response = urllib.request.urlopen(req).read()
         data = json.loads(response)
         
-        # Reddit JSON structure: [0] is post, [1] is comments
         post_data = data[0]['data']['children'][0]['data']
         comments_data = data[1]['data']['children']
         
-        # Get Post Body
-        body = post_data.get('selftext', '')[:800] 
+        # 1. Handle Link Posts (Empty Body)
+        body = post_data.get('selftext', '')
+        if not body:
+            # It's a link post! Grab the external URL
+            external_link = post_data.get('url_overridden_by_dest', 'No Link')
+            body = f"(This is a Link Post pointing to: {external_link})"
+        else:
+            body = body[:800]
         
-        # Get Top 5 Comments
+        # 2. Get Comments
         comments_text = ""
-        for i, c in enumerate(comments_data[:5]):
+        count = 0
+        for c in comments_data:
             if 'data' in c and 'body' in c['data']:
-                comments_text += f"Comment {i+1}: {c['data']['body'][:400]}\n"
+                comments_text += f"Comment {count+1}: {c['data']['body'][:400]}\n"
+                count += 1
+                if count >= 6: break # Get top 6 comments
+        
+        print(f"      > fetched {len(body)} chars of post and {count} comments.")
         
         full_transcript = f"OP POST: {body}\n\nTOP COMMENTS:\n{comments_text}"
         return full_transcript
         
     except Exception as e:
-        print(f"   --> Failed to fetch Reddit JSON: {e}")
-        return None # Return None to trigger fallback
+        print(f"      > JSON fetch failed: {e}")
+        return None 
 
 def fetch_reddit_buzz():
     print("--- Checking Reddit Communities ---")
@@ -218,6 +226,7 @@ def fetch_reddit_buzz():
                 if found_count >= 2: break 
         except Exception: continue
 
+    # Return top 3 unique threads
     return valid_candidates[:3]
 
 def fetch_expert_insights():
@@ -398,18 +407,17 @@ def main():
         
         # 2. Deep Fetch for Reddit (Get the real comments)
         if "r/" in item["source"]:
-             # Try to get real comments
              discussion_text = fetch_reddit_discussion(item['url'])
              
-             # If Reddit blocked us (discussion_text is None), FALLBACK to Web Search
              if discussion_text is None:
-                 print(f"   --> Reddit blocked JSON. Falling back to Web Search...")
+                 print(f"      --> Reddit blocked JSON. Falling back to Web Search...")
                  web_ctx = get_web_context(item['title'] + " reddit discussion")
                  item['raw_text'] = f"Reddit scraping failed. Web Search Context:\n{web_ctx}"
              else:
                  item['raw_text'] = discussion_text
+                 time.sleep(2) # Be polite
 
-        # 3. Generate Summaries based on Type
+        # 3. Generate Summaries
         if "summary" not in item:
             if "Expert Voice" in item["source"]:
                 item["summary"] = summarize_expert_post(item['title'], item['raw_text'])
